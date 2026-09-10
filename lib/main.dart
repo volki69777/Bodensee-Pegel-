@@ -3,7 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'analysis_service.dart';
 import 'bafu_hydro_service.dart';
@@ -97,7 +99,8 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  static const _selectedStationPreferenceKey = 'selected_station_uuid';
+  static const _lastSelectedStationPreferenceKey = 'selected_station_uuid';
+  static const _startStationPreferenceKey = 'start_station_uuid';
 
   final _pegelOnlineService = PegelOnlineService();
   final _bafuService = BafuHydroService();
@@ -119,13 +122,13 @@ class _DashboardPageState extends State<DashboardPage> {
     ]);
     _liveData = _loadLiveData(_selectedStation);
     _environmentData = _environmentService.fetchFor(_selectedStation);
-    _restoreSelectedStation();
+    _restoreStartStation();
   }
 
-  Future<void> _restoreSelectedStation() async {
+  Future<void> _restoreStartStation() async {
     try {
       final savedUuid = await _preferences.getString(
-        _selectedStationPreferenceKey,
+        _startStationPreferenceKey,
       );
       if (savedUuid == null) return;
       final stations = await _stations;
@@ -152,7 +155,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _environmentData = _environmentService.fetchFor(station);
     });
     if (persist) {
-      _preferences.setString(_selectedStationPreferenceKey, station.uuid);
+      _preferences.setString(_lastSelectedStationPreferenceKey, station.uuid);
     }
   }
 
@@ -263,12 +266,17 @@ class _DashboardPageState extends State<DashboardPage> {
     if (station != null && mounted) _selectStation(station);
   }
 
+  Future<void> _openMore() => Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(builder: (_) => const MorePage()),
+  );
+
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
       onAnalysis: () => Navigator.of(context)
           .push(MaterialPageRoute<void>(builder: (_) => const AnalysisPage())),
       onMap: _openMap,
+      onMore: _openMore,
     ),
     body: Stack(
       children: [
@@ -680,6 +688,638 @@ class _MapPanelValue extends StatelessWidget {
     ],
   );
 }
+
+class MorePage extends StatefulWidget {
+  const MorePage({super.key});
+
+  @override
+  State<MorePage> createState() => _MorePageState();
+}
+
+class _MorePageState extends State<MorePage> {
+  static const _startStationPreferenceKey = 'start_station_uuid';
+  static const _stations = <PegelStation>[
+    PegelOnlineService.konstanz,
+    BafuHydroService.romanshorn,
+    VorarlbergHydroService.bregenz,
+  ];
+
+  final _preferences = SharedPreferencesAsync();
+  PegelStation _startStation = PegelOnlineService.konstanz;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreStartStation();
+  }
+
+  Future<void> _restoreStartStation() async {
+    try {
+      final savedUuid = await _preferences.getString(
+        _startStationPreferenceKey,
+      );
+      final station = _stations
+          .where((station) => station.uuid == savedUuid)
+          .firstOrNull;
+      if (station != null && mounted) setState(() => _startStation = station);
+    } catch (_) {
+      // The built-in Konstanz default remains available when local storage fails.
+    }
+  }
+
+  Future<void> _selectStartStation() async {
+    final station = await showModalBottomSheet<PegelStation>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _StationSelector(
+        stations: _stations,
+        selectedStation: _startStation,
+      ),
+    );
+    if (station == null || !mounted || station.uuid == _startStation.uuid) {
+      return;
+    }
+    setState(() => _startStation = station);
+    try {
+      await _preferences.setString(_startStationPreferenceKey, station.uuid);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Startstation konnte nicht gespeichert werden.')),
+      );
+    }
+  }
+
+  void _showComingSoon(String title) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: const Text('Wird vor Veröffentlichung ergänzt.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Schließen'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    bottomNavigationBar: _BottomNavigation(
+      onLive: () => Navigator.of(context).pop(),
+      onAnalysis: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const AnalysisPage()),
+      ),
+      moreActive: true,
+    ),
+    body: Stack(
+      children: [
+        const _PhotoBackdrop(),
+        SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 140),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'MEHR',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: .5,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                _MoreSection(
+                  title: 'EINSTELLUNGEN',
+                  child: Column(
+                    children: [
+                      _MoreActionRow(
+                        icon: Icons.location_on_outlined,
+                        title: 'Startstation',
+                        detail: _startStation.name,
+                        onTap: _selectStartStation,
+                      ),
+                      const Divider(height: 1, color: Color(0xFFE5ECF5)),
+                      const _MoreInfoRow(
+                        icon: Icons.refresh_rounded,
+                        title: 'Aktualisierung',
+                        detail:
+                            'Live-Daten werden beim Öffnen und manuell aktualisiert.',
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const _MoreSection(
+                  title: 'BENACHRICHTIGUNGEN',
+                  child: _MoreInfoRow(
+                    icon: Icons.notifications_none_rounded,
+                    title: 'Pegelgrenzen und Warnungen folgen',
+                    detail: 'Benachrichtigungen werden in einer späteren Version ergänzt.',
+                    muted: true,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                _MoreSection(
+                  title: 'INFORMATIONEN',
+                  child: Column(
+                    children: [
+                      _MoreActionRow(
+                        icon: Icons.hub_outlined,
+                        title: 'Datenquellen & Messstationen',
+                        detail: 'Offizielle Quellen, Messstationen und Lizenzen',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const DataSourcesPage(),
+                          ),
+                        ),
+                      ),
+                      const Divider(height: 1, color: Color(0xFFE5ECF5)),
+                      _MoreActionRow(
+                        icon: Icons.info_outline_rounded,
+                        title: 'Über Bodensee Pegel+',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const AboutPage(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                _MoreSection(
+                  title: 'RECHTLICHES',
+                  titleColor: AppColors.navy,
+                  child: Column(
+                    children: [
+                      _MoreActionRow(
+                        icon: Icons.privacy_tip_outlined,
+                        title: 'Datenschutz',
+                        onTap: () => _showComingSoon('Datenschutz'),
+                      ),
+                      const Divider(height: 1, color: Color(0xFFE5ECF5)),
+                      _MoreActionRow(
+                        icon: Icons.article_outlined,
+                        title: 'Impressum',
+                        onTap: () => _showComingSoon('Impressum'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class DataSourcesPage extends StatelessWidget {
+  const DataSourcesPage({super.key});
+
+  Future<void> _openLink(BuildContext context, String url) async {
+    final opened = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Link konnte nicht geöffnet werden.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _MoreSubpage(
+    title: 'Datenquellen & Messstationen',
+    child: _MoreSection(
+      title: 'OFFIZIELLE QUELLEN',
+      child: Column(
+        children: _moreSources
+            .map(
+              (source) => _SourceRow(
+                source: source,
+                onOpen: () => _openLink(context, source.url),
+              ),
+            )
+            .toList(),
+      ),
+    ),
+  );
+}
+
+class AboutPage extends StatefulWidget {
+  const AboutPage({super.key});
+
+  @override
+  State<AboutPage> createState() => _AboutPageState();
+}
+
+class _AboutPageState extends State<AboutPage> {
+  late Future<String?> _version;
+
+  @override
+  void initState() {
+    super.initState();
+    _version = _loadVersion();
+  }
+
+  Future<String?> _loadVersion() async {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      return '${packageInfo.version} (${packageInfo.buildNumber})';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _MoreSubpage(
+    title: 'Über Bodensee Pegel+',
+    child: _MoreSection(
+      title: 'BODENSEE PEGEL+',
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Bodensee Pegel+ zeigt aktuelle und historische Pegelstände sowie ausgewählte Umwelt- und Prognosedaten rund um den Bodensee.',
+              style: TextStyle(
+                color: AppColors.navy,
+                fontSize: 15,
+                height: 1.42,
+              ),
+            ),
+            const SizedBox(height: 14),
+            FutureBuilder<String?>(
+              future: _version,
+              builder: (context, snapshot) => Text(
+                snapshot.hasData && snapshot.data != null
+                    ? 'Version ${snapshot.data}'
+                    : 'Version nicht verfügbar',
+                style: const TextStyle(
+                  color: AppColors.blue,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            const SizedBox(height: 15),
+            const Text(
+              'Die dargestellten Daten stammen aus offiziellen Quellen, können jedoch unvollständig, verspätet oder fehlerhaft sein. Sie dürfen nicht als alleinige Grundlage für sicherheitskritische Entscheidungen verwendet werden.',
+              style: TextStyle(
+                color: Color(0xFF64738D),
+                fontSize: 13,
+                height: 1.42,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _MoreSubpage extends StatelessWidget {
+  const _MoreSubpage({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: Stack(
+      children: [
+        const _PhotoBackdrop(),
+        SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 14, 20, 18),
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Zurück',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 23,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 2, 20, 32),
+                  child: child,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _MoreSection extends StatelessWidget {
+  const _MoreSection({
+    required this.title,
+    required this.child,
+    this.titleColor = Colors.white,
+  });
+
+  final String title;
+  final Widget child;
+  final Color titleColor;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Padding(
+        padding: const EdgeInsets.only(left: 4, bottom: 8),
+        child: Text(
+          title,
+          style: TextStyle(
+            color: titleColor,
+            fontSize: 12,
+            fontWeight: FontWeight.w900,
+            letterSpacing: .5,
+          ),
+        ),
+      ),
+      Container(decoration: _cardDecoration(radius: 24), child: child),
+    ],
+  );
+}
+
+class _MoreActionRow extends StatelessWidget {
+  const _MoreActionRow({
+    required this.icon,
+    required this.title,
+    required this.onTap,
+    this.detail,
+  });
+
+  final IconData icon;
+  final String title;
+  final String? detail;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(24),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
+      child: Row(
+        children: [
+          _MoreIcon(icon: icon),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: AppColors.navy,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                if (detail != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    detail!,
+                    style: const TextStyle(color: Color(0xFF71809A), fontSize: 13),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const Icon(Icons.chevron_right_rounded, color: AppColors.blue),
+        ],
+      ),
+    ),
+  );
+}
+
+class _MoreInfoRow extends StatelessWidget {
+  const _MoreInfoRow({
+    required this.icon,
+    required this.title,
+    required this.detail,
+    this.muted = false,
+  });
+
+  final IconData icon;
+  final String title;
+  final String detail;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _MoreIcon(icon: icon, muted: muted),
+        const SizedBox(width: 13),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  color: muted ? const Color(0xFF71809A) : AppColors.navy,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                detail,
+                style: const TextStyle(
+                  color: Color(0xFF71809A),
+                  fontSize: 13,
+                  height: 1.32,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _MoreIcon extends StatelessWidget {
+  const _MoreIcon({required this.icon, this.muted = false});
+
+  final IconData icon;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 40,
+    height: 40,
+    decoration: BoxDecoration(
+      color: (muted ? const Color(0xFF8B98AC) : AppColors.blue).withValues(alpha: .10),
+      shape: BoxShape.circle,
+    ),
+    child: Icon(icon, color: muted ? const Color(0xFF8B98AC) : AppColors.blue),
+  );
+}
+
+class _SourceRow extends StatelessWidget {
+  const _SourceRow({required this.source, required this.onOpen});
+
+  final _MoreSource source;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(18, 15, 14, 0),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                source.name,
+                style: const TextStyle(
+                  color: AppColors.navy,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Offizielle Quelle öffnen',
+              onPressed: onOpen,
+              icon: const Icon(Icons.open_in_new_rounded, color: AppColors.blue),
+            ),
+          ],
+        ),
+        Text(
+          source.data,
+          style: const TextStyle(
+            color: Color(0xFF475A78),
+            fontSize: 13,
+            height: 1.3,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          source.stations,
+          style: const TextStyle(color: Color(0xFF71809A), fontSize: 12),
+        ),
+        const SizedBox(height: 5),
+        Text(
+          source.licence,
+          style: const TextStyle(color: AppColors.blue, fontSize: 11, height: 1.28),
+        ),
+        const Padding(
+          padding: EdgeInsets.only(top: 14),
+          child: Divider(height: 1, color: Color(0xFFE5ECF5)),
+        ),
+      ],
+    ),
+  );
+}
+
+class _MoreSource {
+  const _MoreSource({
+    required this.name,
+    required this.data,
+    required this.stations,
+    required this.licence,
+    required this.url,
+  });
+
+  final String name;
+  final String data;
+  final String stations;
+  final String licence;
+  final String url;
+}
+
+const _moreSources = <_MoreSource>[
+  _MoreSource(
+    name: 'PEGELONLINE / WSV',
+    data: 'Pegelstand, Messzeitpunkt und historische Wasserstände',
+    stations: 'Konstanz',
+    licence: 'DL-DE-Zero-2.0 · Ungeprüfte Rohdaten',
+    url: 'https://www.pegelonline.wsv.de/webservice/ueberblick',
+  ),
+  _MoreSource(
+    name: 'BAFU',
+    data: 'Pegelstand, Historie, saisonale Referenz und Prognose',
+    stations: 'Romanshorn',
+    licence: 'Quelle: Abteilung Hydrologie, Bundesamt für Umwelt BAFU',
+    url: 'https://www.hydrodaten.admin.ch/de/fragen',
+  ),
+  _MoreSource(
+    name: 'Wasserwirtschaft Vorarlberg / VOWIS',
+    data: 'Pegelstand sowie Umweltmesswerte',
+    stations: 'Bregenz',
+    licence: 'Quelle: VOWIS · Lizenz vor Veröffentlichung prüfen',
+    url: 'https://vowis.vorarlberg.at/',
+  ),
+  _MoreSource(
+    name: 'Deutscher Wetterdienst',
+    data: 'Wind und Lufttemperatur',
+    stations: 'Konstanz · Station 02712',
+    licence: 'CC BY 4.0 · Quelle: Deutscher Wetterdienst (DWD)',
+    url: 'https://opendata.dwd.de/climate_environment/CDC/',
+  ),
+  _MoreSource(
+    name: 'MeteoSwiss',
+    data: 'Wind und Lufttemperatur',
+    stations: 'Romanshorn · Station Güttingen',
+    licence: 'CC BY 4.0 · Quelle: MeteoSwiss',
+    url: 'https://www.meteoswiss.admin.ch/services-and-publications/service/open-data.html',
+  ),
+  _MoreSource(
+    name: 'Bayerisches Landesamt für Umwelt',
+    data: 'Messstation Lindau – Wassertemperatur für Konstanz und Romanshorn',
+    stations: 'Lindau · Messstation 20001001',
+    licence: 'Datenquelle: Bayerisches Landesamt für Umwelt, www.lfu.bayern.de',
+    url: 'https://www.gkd.bayern.de/de/seen/wassertemperatur/bayern/lindau-20001001/messwerte',
+  ),
+  _MoreSource(
+    name: 'OpenStreetMap',
+    data: 'Kartendaten und Kartenbasis',
+    stations: 'Kartenansicht',
+    licence: '© OpenStreetMap contributors · ODbL',
+    url: 'https://www.openstreetmap.org/copyright',
+  ),
+];
 
 class AnalysisPage extends StatefulWidget {
   const AnalysisPage({super.key});
@@ -2427,15 +3067,19 @@ class _BottomNavigation extends StatelessWidget {
     this.onLive,
     this.onAnalysis,
     this.onMap,
+    this.onMore,
     this.analysisActive = false,
     this.mapActive = false,
+    this.moreActive = false,
   });
 
   final VoidCallback? onLive;
   final VoidCallback? onAnalysis;
   final VoidCallback? onMap;
+  final VoidCallback? onMore;
   final bool analysisActive;
   final bool mapActive;
+  final bool moreActive;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -2457,7 +3101,7 @@ class _BottomNavigation extends StatelessWidget {
         _NavItem(
           icon: Icons.waves_rounded,
           label: 'Live',
-          active: !analysisActive && !mapActive,
+          active: !analysisActive && !mapActive && !moreActive,
           onTap: onLive,
         ),
         _NavItem(
@@ -2473,7 +3117,16 @@ class _BottomNavigation extends StatelessWidget {
           active: mapActive,
           onTap: onMap,
         ),
-        const _NavItem(icon: Icons.person_outline_rounded, label: 'Mehr'),
+        _NavItem(
+          key: const ValueKey('nav-more'),
+          icon: Icons.person_outline_rounded,
+          label: 'Mehr',
+          active: moreActive,
+          onTap: onMore ??
+              () => Navigator.of(
+                context,
+              ).push(MaterialPageRoute<void>(builder: (_) => const MorePage())),
+        ),
       ],
     ),
   );
