@@ -5,11 +5,18 @@ const port = Number(process.env.BAFU_PROXY_PORT ?? 8787);
 const bafuHistoryRoute = '/api/bafu/stations/2032/water-level-history';
 const bafuSourceUrl =
   'https://www.hydrodaten.admin.ch/plots/p_q_7days/2032_p_q_7days_de.json';
+const bafuHistory40DaysSourceUrl =
+  'https://www.hydrodaten.admin.ch/plots/p_q_40days/2032_p_q_40days_de.json';
+const bafuAnnualRoute = '/api/bafu/stations/2032/water-level-annual';
 const bafuForecastRoute = '/api/bafu/stations/2032/water-level-forecast';
 const bafuForecastSourceUrl =
   'https://www.hydrodaten.admin.ch/plots/p_forecast/2032_p_forecast_de.json';
 const vorarlbergLiveRoute = '/api/vorarlberg/stations/200337/water-level';
 const vorarlbergSourceUrl = 'https://vowis.vorarlberg.at/api/see';
+const vorarlbergAnnualRoute =
+  '/api/vorarlberg/stations/200337/water-level-annual';
+const vorarlbergAnnualSourceUrl =
+  'https://vowis.vorarlberg.at/api/see/jahresganglinie';
 const konstanzEnvironmentRoute =
   '/api/environment/aa9179c1-17ef-4c61-a48a-74193fa7bfdf';
 const romanshornEnvironmentRoute = '/api/environment/bafu-2032';
@@ -180,8 +187,22 @@ const server = http.createServer(async (request, response) => {
   }
 
   try {
-    if (request.url === vorarlbergLiveRoute) {
+    const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+
+    if (requestUrl.pathname === vorarlbergLiveRoute) {
       sendJson(response, 200, await fetchVorarlbergStationData());
+      return;
+    }
+
+    if (requestUrl.pathname === vorarlbergAnnualRoute) {
+      const sourceResponse = await fetch(vorarlbergAnnualSourceUrl, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!sourceResponse.ok) {
+        throw new Error(`Vorarlberg annual history responded with HTTP ${sourceResponse.status}.`);
+      }
+      sendJson(response, 200, await sourceResponse.json());
       return;
     }
 
@@ -233,7 +254,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (request.url === bafuForecastRoute) {
+    if (requestUrl.pathname === bafuForecastRoute) {
       const sourceResponse = await fetch(bafuForecastSourceUrl, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(12000),
@@ -249,12 +270,27 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (request.url !== bafuHistoryRoute) {
+    if (requestUrl.pathname === bafuAnnualRoute) {
+      const year = requestUrl.searchParams.get('year');
+      if (!/^\d{4}$/.test(year ?? '')) throw new Error('Invalid BAFU comparison year.');
+      const sourceResponse = await fetch(
+        `https://www.hydrodaten.admin.ch/web/hydro/de/p_annual/2032/${year}/plot`,
+        { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000) },
+      );
+      if (!sourceResponse.ok) throw new Error(`BAFU annual history responded with HTTP ${sourceResponse.status}.`);
+      sendJson(response, 200, await sourceResponse.json());
+      return;
+    }
+
+    if (requestUrl.pathname !== bafuHistoryRoute) {
       sendJson(response, 404, { error: 'Not found.' });
       return;
     }
 
-    const sourceResponse = await fetch(bafuSourceUrl, {
+    const historySourceUrl = requestUrl.searchParams.get('range') === '40d'
+      ? bafuHistory40DaysSourceUrl
+      : bafuSourceUrl;
+    const sourceResponse = await fetch(historySourceUrl, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(12000),
     });
@@ -263,7 +299,7 @@ const server = http.createServer(async (request, response) => {
     }
     const sourcePayload = await sourceResponse.json();
     sendJson(response, 200, {
-      source: bafuSourceUrl,
+      source: historySourceUrl,
       stationId: 2032,
       unit: 'm ü. M.',
       points: normalizedPoints(sourcePayload),

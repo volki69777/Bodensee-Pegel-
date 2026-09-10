@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'analysis_service.dart';
 import 'bafu_hydro_service.dart';
 import 'environment_service.dart';
 import 'pegelonline_service.dart';
@@ -248,7 +249,10 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    bottomNavigationBar: const _BottomNavigation(),
+    bottomNavigationBar: _BottomNavigation(
+      onAnalysis: () => Navigator.of(context)
+          .push(MaterialPageRoute<void>(builder: (_) => const AnalysisPage())),
+    ),
     body: Stack(
       children: [
         const _PhotoBackdrop(),
@@ -306,6 +310,654 @@ class _DashboardPageState extends State<DashboardPage> {
   );
 }
 
+class AnalysisPage extends StatefulWidget {
+  const AnalysisPage({super.key});
+
+  @override
+  State<AnalysisPage> createState() => _AnalysisPageState();
+}
+
+class _AnalysisPageState extends State<AnalysisPage> {
+  final _analysisService = AnalysisService();
+  final _stations = const [
+    PegelOnlineService.konstanz,
+    BafuHydroService.romanshorn,
+    VorarlbergHydroService.bregenz,
+  ];
+  PegelStation _station = PegelOnlineService.konstanz;
+  late AnalysisPeriod _period;
+  late Future<AnalysisSeries> _series;
+
+  @override
+  void initState() {
+    super.initState();
+    _period = _analysisService.periodsFor(_station).first;
+    _series = _load();
+  }
+
+  Future<AnalysisSeries> _load() => _analysisService.fetch(_station, _period);
+
+  void _selectPeriod(AnalysisPeriod period) {
+    if (period == _period) return;
+    setState(() {
+      _period = period;
+      _series = _load();
+    });
+  }
+
+  Future<void> _selectStation() async {
+    final station = await showModalBottomSheet<PegelStation>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) =>
+          _StationSelector(stations: _stations, selectedStation: _station),
+    );
+    if (station == null || !mounted || station.uuid == _station.uuid) return;
+    setState(() {
+      _station = station;
+      _period = _analysisService.periodsFor(station).first;
+      _series = _load();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final periods = _analysisService.periodsFor(_station);
+    return Scaffold(
+      bottomNavigationBar: _BottomNavigation(
+        onLive: () => Navigator.of(context).pop(),
+        analysisActive: true,
+      ),
+      body: Stack(
+        children: [
+          const _PhotoBackdrop(),
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 140),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const _Header(),
+                  const SizedBox(height: 42),
+                  const Text(
+                    'ANALYSE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -1,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _AnalysisStationButton(
+                    station: _station,
+                    onTap: _selectStation,
+                  ),
+                  const SizedBox(height: 24),
+                  _PeriodTabs(
+                    periods: periods,
+                    selected: _period,
+                    onSelected: _selectPeriod,
+                  ),
+                  const SizedBox(height: 18),
+                  FutureBuilder<AnalysisSeries>(
+                    future: _series,
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return const _UnavailableInfoCard(
+                          icon: Icons.query_stats_rounded,
+                          title: 'ANALYSEDATEN',
+                          message: 'Daten aktuell nicht verfügbar.',
+                        );
+                      }
+                      if (!snapshot.hasData) {
+                        return const _AnalysisLoadingCard();
+                      }
+                      return _AnalysisContent(
+                        station: _station,
+                        series: snapshot.data!,
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AnalysisStationButton extends StatelessWidget {
+  const _AnalysisStationButton({required this.station, required this.onTap});
+
+  final PegelStation station;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(22),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(22),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
+        child: Row(
+          children: [
+            const Icon(Icons.location_on_outlined, color: AppColors.deepBlue),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                station.name,
+                style: const TextStyle(
+                  color: AppColors.deepBlue,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: AppColors.deepBlue,
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _PeriodTabs extends StatelessWidget {
+  const _PeriodTabs({
+    required this.periods,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<AnalysisPeriod> periods;
+  final AnalysisPeriod selected;
+  final ValueChanged<AnalysisPeriod> onSelected;
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    child: Row(
+      children: periods
+          .map(
+            (period) => Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(period.label),
+                selected: period == selected,
+                onSelected: (_) => onSelected(period),
+                showCheckmark: false,
+                selectedColor: AppColors.blue,
+                backgroundColor: Colors.white,
+                labelStyle: TextStyle(
+                  color: period == selected ? Colors.white : AppColors.deepBlue,
+                  fontWeight: FontWeight.w800,
+                ),
+                side: BorderSide.none,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    ),
+  );
+}
+
+class _AnalysisLoadingCard extends StatelessWidget {
+  const _AnalysisLoadingCard();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    height: 290,
+    decoration: _cardDecoration(),
+    alignment: Alignment.center,
+    child: const Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CircularProgressIndicator(color: AppColors.blue),
+        SizedBox(height: 14),
+        Text(
+          'Analysedaten werden geladen …',
+          style: TextStyle(color: Color(0xFF64738D)),
+        ),
+      ],
+    ),
+  );
+}
+
+class _AnalysisContent extends StatelessWidget {
+  const _AnalysisContent({required this.station, required this.series});
+
+  final PegelStation station;
+  final AnalysisSeries series;
+
+  @override
+  Widget build(BuildContext context) {
+    final readings = series.readings;
+    final minimum = readings
+        .map((reading) => reading.valueCm)
+        .reduce((a, b) => a < b ? a : b);
+    final maximum = readings
+        .map((reading) => reading.valueCm)
+        .reduce((a, b) => a > b ? a : b);
+    final change = readings.last.valueCm - readings.first.valueCm;
+    return Column(
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 15),
+          decoration: _cardDecoration(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'PEGELVERLAUF · ${series.period.label.toUpperCase()}',
+                style: const TextStyle(
+                  color: AppColors.deepBlue,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 15),
+              SizedBox(
+                height: 285,
+                child: CustomPaint(
+                  painter: _AnalysisChartPainter(readings, series.period),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        _AnalysisMetrics(
+          current: readings.last.valueCm,
+          minimum: minimum,
+          maximum: maximum,
+          change: change,
+          period: series.period,
+        ),
+        const SizedBox(height: 18),
+        _ReferenceCard(
+          station: station,
+          seasonalReference: series.seasonalReference,
+        ),
+      ],
+    );
+  }
+}
+
+class _AnalysisMetrics extends StatelessWidget {
+  const _AnalysisMetrics({
+    required this.current,
+    required this.minimum,
+    required this.maximum,
+    required this.change,
+    required this.period,
+  });
+
+  final double current;
+  final double minimum;
+  final double maximum;
+  final double change;
+  final AnalysisPeriod period;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
+    decoration: _cardDecoration(radius: 22),
+    child: Row(
+      children: [
+        _Metric(label: 'AKTUELL', value: _cm(current)),
+        const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFE1E9F4)),
+        _Metric(label: 'MINIMUM', value: _cm(minimum)),
+        const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFE1E9F4)),
+        _Metric(label: 'MAXIMUM', value: _cm(maximum)),
+        const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFE1E9F4)),
+        _Metric(
+          label: 'ÄNDERUNG',
+          value: '${change >= 0 ? '+' : ''}${_cm(change)}',
+          accent: change < 0 ? AppColors.red : AppColors.green,
+        ),
+      ],
+    ),
+  );
+
+  String _cm(double value) {
+    final digits = value == value.roundToDouble() ? 0 : 1;
+    return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
+  }
+}
+
+class _Metric extends StatelessWidget {
+  const _Metric({
+    required this.label,
+    required this.value,
+    this.accent = AppColors.navy,
+  });
+
+  final String label;
+  final String value;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: Column(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF71809A),
+            fontSize: 9,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 6),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            value,
+            style: TextStyle(
+              color: accent,
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _ReferenceCard extends StatelessWidget {
+  const _ReferenceCard({required this.station, this.seasonalReference});
+
+  final PegelStation station;
+  final SeasonalReference? seasonalReference;
+
+  @override
+  Widget build(BuildContext context) {
+    final isRomanshorn = station.source == StationSource.bafu;
+    final reference = seasonalReference;
+    final text = isRomanshorn
+        ? _seasonalText(reference)
+        : switch (station.source) {
+            StationSource.pegelOnline =>
+              'Langzeitreferenz · MW 341 cm · MNW 262 cm',
+            StationSource.bafu => '',
+            StationSource.vorarlberg =>
+              'Langzeitreferenz 1864–2024 · Mittel · Min · Max',
+          };
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: _cardDecoration(radius: 22),
+      child: Row(
+        children: [
+          const Icon(Icons.insights_rounded, color: AppColors.blue),
+          const SizedBox(width: 12),
+          Expanded(
+            child: isRomanshorn && reference != null
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        text,
+                        style: const TextStyle(
+                          color: AppColors.deepBlue,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Saisonaler Median: ${_formatCm(reference.medianCm)} cm',
+                        style: const TextStyle(
+                          color: Color(0xFF71809A),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  )
+                : Text(
+                    text,
+                    style: const TextStyle(
+                      color: AppColors.deepBlue,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _seasonalText(SeasonalReference? reference) {
+    if (reference == null) {
+      return 'Saisonale BAFU-Referenz aktuell nicht verfügbar.';
+    }
+    if (reference.isWithinNormalRange) {
+      return 'Aktuell im normalen saisonalen Bereich';
+    }
+    final difference = reference.differenceCm;
+    final direction = difference < 0 ? 'unter' : 'über';
+    return 'Aktuell ${_formatCm(difference.abs())} cm $direction dem saisonalen Median';
+  }
+
+  String _formatCm(double value) {
+    final digits = value == value.roundToDouble() ? 0 : 1;
+    return value.toStringAsFixed(digits).replaceAll('.', ',');
+  }
+}
+
+class _AnalysisChartPainter extends CustomPainter {
+  const _AnalysisChartPainter(this.readings, this.period);
+
+  final List<AnalysisReading> readings;
+  final AnalysisPeriod period;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const left = 42.0;
+    const right = 8.0;
+    const top = 14.0;
+    const bottom = 36.0;
+    final chart = Rect.fromLTWH(
+      left,
+      top,
+      size.width - left - right,
+      size.height - top - bottom,
+    );
+    final values = readings.map((reading) => reading.valueCm).toList();
+    final rawMin = values.reduce((a, b) => a < b ? a : b);
+    final rawMax = values.reduce((a, b) => a > b ? a : b);
+    final padding = math.max(.5, (rawMax - rawMin) * .15).toDouble();
+    final step = _niceStep((rawMax - rawMin + padding * 2) / 4);
+    final minY = ((rawMin - padding) / step).floor() * step;
+    final maxY = ((rawMax + padding) / step).ceil() * step;
+    final start = readings.first.timestamp;
+    final end = readings.last.timestamp;
+    final duration = math
+        .max(1, end.difference(start).inMilliseconds)
+        .toDouble();
+    final grid = Paint()
+      ..color = const Color(0xFFE8EFF8)
+      ..strokeWidth = 1;
+    final yLabelPainter = TextPainter(textDirection: TextDirection.ltr);
+    for (var value = minY; value <= maxY + step / 100; value += step) {
+      final y = chart.bottom - chart.height * (value - minY) / (maxY - minY);
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), grid);
+      yLabelPainter.text = TextSpan(
+        text: _formatAxisValue(value),
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 10),
+      );
+      yLabelPainter.layout();
+      yLabelPainter.paint(
+        canvas,
+        Offset(
+          chart.left - yLabelPainter.width - 7,
+          y - yLabelPainter.height / 2,
+        ),
+      );
+    }
+
+    final plottedReadings = _readingsForDisplay();
+    final path = Path();
+    for (var index = 0; index < plottedReadings.length; index++) {
+      final reading = plottedReadings[index];
+      final x =
+          chart.left +
+          chart.width *
+              reading.timestamp.difference(start).inMilliseconds /
+              duration;
+      final y =
+          chart.bottom -
+          chart.height * (reading.valueCm - minY) / (maxY - minY);
+      if (index == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = AppColors.blue
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+    final xTicks = _xTicks(start, end);
+    final xLabelPainter = TextPainter(textDirection: TextDirection.ltr);
+    for (final tick in xTicks) {
+      xLabelPainter.text = TextSpan(
+        text: tick.label,
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 10),
+      );
+      xLabelPainter.layout();
+      final x = chart.left + chart.width * tick.fraction;
+      xLabelPainter.paint(
+        canvas,
+        Offset(
+          (x - xLabelPainter.width / 2)
+              .clamp(chart.left, chart.right - xLabelPainter.width)
+              .toDouble(),
+          chart.bottom + 9,
+        ),
+      );
+    }
+  }
+
+  List<AnalysisReading> _readingsForDisplay() {
+    final target = switch (period) {
+      AnalysisPeriod.hours24 => readings.length,
+      AnalysisPeriod.days7 => 220,
+      AnalysisPeriod.days30 => 260,
+      AnalysisPeriod.year1 => readings.length,
+    };
+    if (readings.length <= target) return readings;
+    final bucketCount = math.max(1, target ~/ 2);
+    final selected = <AnalysisReading>{readings.first, readings.last};
+    for (var bucket = 0; bucket < bucketCount; bucket++) {
+      final from = (bucket * readings.length / bucketCount).floor();
+      final to = math.min(
+        readings.length,
+        ((bucket + 1) * readings.length / bucketCount).ceil(),
+      );
+      final points = readings.sublist(from, to);
+      selected.add(points.reduce((a, b) => a.valueCm < b.valueCm ? a : b));
+      selected.add(points.reduce((a, b) => a.valueCm > b.valueCm ? a : b));
+    }
+    final result = selected.toList()
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return result;
+  }
+
+  List<_ChartTick> _xTicks(DateTime start, DateTime end) {
+    final count = period == AnalysisPeriod.hours24 ? 5 : 4;
+    return List.generate(count, (index) {
+      final fraction = index / (count - 1);
+      final time = start
+          .add(
+            Duration(
+              milliseconds: (end.difference(start).inMilliseconds * fraction)
+                  .round(),
+            ),
+          )
+          .toLocal();
+      return _ChartTick(fraction, _formatTime(time));
+    });
+  }
+
+  String _formatTime(DateTime time) => switch (period) {
+    AnalysisPeriod.hours24 =>
+      '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+    AnalysisPeriod.days7 =>
+      '${_weekday(time.weekday)} ${time.day.toString().padLeft(2, '0')}.${time.month.toString().padLeft(2, '0')}',
+    AnalysisPeriod.days30 =>
+      '${time.day.toString().padLeft(2, '0')}.${time.month.toString().padLeft(2, '0')}',
+    AnalysisPeriod.year1 => _month(time.month),
+  };
+
+  String _formatAxisValue(double value) => value == value.roundToDouble()
+      ? value.round().toString()
+      : value.toStringAsFixed(1).replaceAll('.', ',');
+
+  double _niceStep(double value) {
+    final exponent = math
+        .pow(10, (math.log(value) / math.ln10).floor())
+        .toDouble();
+    final fraction = value / exponent;
+    final niceFraction = fraction <= 1
+        ? 1.0
+        : fraction <= 2
+        ? 2.0
+        : fraction <= 5
+        ? 5.0
+        : 10.0;
+    return niceFraction * exponent;
+  }
+
+  String _weekday(int weekday) =>
+      const ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'][weekday - 1];
+
+  String _month(int month) => const [
+    'Jan',
+    'Feb',
+    'Mär',
+    'Apr',
+    'Mai',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Okt',
+    'Nov',
+    'Dez',
+  ][month - 1];
+
+  @override
+  bool shouldRepaint(covariant _AnalysisChartPainter oldDelegate) =>
+      oldDelegate.readings != readings || oldDelegate.period != period;
+}
+
+class _ChartTick {
+  const _ChartTick(this.fraction, this.label);
+
+  final double fraction;
+  final String label;
+}
+
 class _PhotoBackdrop extends StatelessWidget {
   const _PhotoBackdrop();
 
@@ -321,7 +973,7 @@ class _PhotoBackdrop extends StatelessWidget {
             'https://www.travelstuttgart.com/uploads/5/6/1/0/5610753/konz1_4_orig.jpg',
             fit: BoxFit.cover,
             alignment: Alignment.center,
-            errorBuilder: (_, __, ___) =>
+            errorBuilder: (_, _, _) =>
                 const ColoredBox(color: Color(0xFF127FC9)),
           ),
           const DecoratedBox(
@@ -557,17 +1209,20 @@ class _StationSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SafeArea(
-    top: false,
-    child: Container(
-      padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+        top: false,
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * .68,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
           Center(
             child: Container(
               width: 42,
@@ -665,10 +1320,12 @@ class _StationSelector extends StatelessWidget {
               ),
             ),
           ),
-        ],
-      ),
-    ),
-  );
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
 }
 
 class _Change24Hours extends StatelessWidget {
@@ -1393,7 +2050,15 @@ class _EnvironmentSection extends StatelessWidget {
 }
 
 class _BottomNavigation extends StatelessWidget {
-  const _BottomNavigation();
+  const _BottomNavigation({
+    this.onLive,
+    this.onAnalysis,
+    this.analysisActive = false,
+  });
+
+  final VoidCallback? onLive;
+  final VoidCallback? onAnalysis;
+  final bool analysisActive;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -1409,13 +2074,23 @@ class _BottomNavigation extends StatelessWidget {
         ),
       ],
     ),
-    child: const Row(
+    child: Row(
       mainAxisAlignment: MainAxisAlignment.spaceAround,
       children: [
-        _NavItem(icon: Icons.waves_rounded, label: 'Live', active: true),
-        _NavItem(icon: Icons.query_stats_rounded, label: 'Analyse'),
-        _NavItem(icon: Icons.location_on_outlined, label: 'Karte'),
-        _NavItem(icon: Icons.person_outline_rounded, label: 'Mehr'),
+        _NavItem(
+          icon: Icons.waves_rounded,
+          label: 'Live',
+          active: !analysisActive,
+          onTap: onLive,
+        ),
+        _NavItem(
+          icon: Icons.query_stats_rounded,
+          label: 'Analyse',
+          active: analysisActive,
+          onTap: onAnalysis,
+        ),
+        const _NavItem(icon: Icons.location_on_outlined, label: 'Karte'),
+        const _NavItem(icon: Icons.person_outline_rounded, label: 'Mehr'),
       ],
     ),
   );
@@ -1426,37 +2101,43 @@ class _NavItem extends StatelessWidget {
     required this.icon,
     required this.label,
     this.active = false,
+    this.onTap,
   });
 
   final IconData icon;
   final String label;
   final bool active;
+  final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 21, vertical: 6),
-        decoration: BoxDecoration(
-          color: active ? const Color(0xFFE7F1FF) : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(22),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 21, vertical: 6),
+          decoration: BoxDecoration(
+            color: active ? const Color(0xFFE7F1FF) : Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Icon(
+            icon,
+            color: active ? AppColors.blue : AppColors.navy,
+            size: 31,
+          ),
         ),
-        child: Icon(
-          icon,
-          color: active ? AppColors.blue : AppColors.navy,
-          size: 31,
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(
+            color: active ? AppColors.blue : AppColors.navy,
+            fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+          ),
         ),
-      ),
-      const SizedBox(height: 2),
-      Text(
-        label,
-        style: TextStyle(
-          color: active ? AppColors.blue : AppColors.navy,
-          fontWeight: active ? FontWeight.w800 : FontWeight.w600,
-        ),
-      ),
-    ],
+      ],
+    ),
   );
 }
 

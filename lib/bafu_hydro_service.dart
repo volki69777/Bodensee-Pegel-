@@ -99,6 +99,12 @@ WHERE {
     }
   }
 
+  /// Aktuelle Originalmessung aus dem offiziellen LINDAS-Dienst.
+  /// Diese separate Abfrage wird auch für tagesgenaue saisonale Vergleiche
+  /// verwendet; eine Jahresreferenz ersetzt niemals eine Live-Messung.
+  Future<BafuReading> fetchRomanshornCurrentReading() =>
+      _fetchCurrentFromLindas();
+
   Future<BafuReading> _fetchCurrentFromLindas() async {
     final endpoint = Uri.parse(_lindasEndpoint).replace(
       queryParameters: const {'query': _currentQuery, 'format': 'json'},
