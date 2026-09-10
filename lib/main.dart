@@ -1,11 +1,14 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'analysis_service.dart';
 import 'bafu_hydro_service.dart';
 import 'environment_service.dart';
+import 'map_configuration.dart';
 import 'pegelonline_service.dart';
 import 'vorarlberg_hydro_service.dart';
 
@@ -247,11 +250,25 @@ class _DashboardPageState extends State<DashboardPage> {
   double _waterLevelCm(double waterLevelMasl, double referenceMasl) =>
       (waterLevelMasl - referenceMasl) * 100;
 
+  Future<void> _openMap() async {
+    final station = await Navigator.of(context).push<PegelStation>(
+      MaterialPageRoute<PegelStation>(
+        builder: (_) => MapPage(
+          selectedStation: _selectedStation,
+          loadLiveData: _loadLiveData,
+          loadEnvironmentData: _environmentService.fetchFor,
+        ),
+      ),
+    );
+    if (station != null && mounted) _selectStation(station);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
       onAnalysis: () => Navigator.of(context)
           .push(MaterialPageRoute<void>(builder: (_) => const AnalysisPage())),
+      onMap: _openMap,
     ),
     body: Stack(
       children: [
@@ -307,6 +324,360 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
       ],
     ),
+  );
+}
+
+class MapPage extends StatefulWidget {
+  const MapPage({
+    super.key,
+    required this.selectedStation,
+    required this.loadLiveData,
+    required this.loadEnvironmentData,
+  });
+
+  final PegelStation selectedStation;
+  final Future<StationLiveData> Function(PegelStation) loadLiveData;
+  final Future<StationEnvironmentData> Function(PegelStation)
+  loadEnvironmentData;
+
+  @override
+  State<MapPage> createState() => _MapPageState();
+}
+
+class _MapPageState extends State<MapPage> {
+  static const _stations = [
+    PegelOnlineService.konstanz,
+    BafuHydroService.romanshorn,
+    VorarlbergHydroService.bregenz,
+  ];
+  late Future<List<_MapStationData>> _data;
+
+  @override
+  void initState() {
+    super.initState();
+    _data = _load();
+  }
+
+  Future<List<_MapStationData>> _load() => Future.wait(
+    _stations.map((station) async {
+      StationLiveData? live;
+      StationEnvironmentData? environment;
+      try {
+        live = await widget.loadLiveData(station);
+      } catch (_) {}
+      try {
+        environment = await widget.loadEnvironmentData(station);
+      } catch (_) {}
+      return _MapStationData(
+        station: station,
+        live: live,
+        environment: environment,
+      );
+    }),
+  );
+
+  Future<void> _openPanel(_MapStationData data) async {
+    final station = await showModalBottomSheet<PegelStation>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => _MapStationPanel(
+        data: data,
+        onOpen: () => Navigator.of(context).pop(data.station),
+      ),
+    );
+    if (station != null && mounted) Navigator.of(context).pop(station);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    bottomNavigationBar: _BottomNavigation(
+      onLive: () => Navigator.of(context).pop(),
+      mapActive: true,
+    ),
+    body: FutureBuilder<List<_MapStationData>>(
+      future: _data,
+      builder: (context, snapshot) {
+        final stationData =
+            snapshot.data ??
+            _stations
+                .map((station) => _MapStationData(station: station))
+                .toList();
+        return Stack(
+          children: [
+            FlutterMap(
+              options: const MapOptions(
+                // Framed so that all three supported stations remain visible
+                // while keeping the map focused on the Bodensee.
+                initialCenter: LatLng(47.58, 9.46),
+                initialZoom: 9.85,
+                minZoom: 7,
+                maxZoom: 17,
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: MapConfiguration.developmentTileUrl,
+                  userAgentPackageName: MapConfiguration.userAgentPackageName,
+                ),
+                MarkerLayer(
+                  markers: stationData.map((data) {
+                    final location = MapConfiguration.locationFor(data.station);
+                    return Marker(
+                      point: LatLng(location.latitude, location.longitude),
+                      width: 82,
+                      height: 56,
+                      child: _MapMarker(
+                        data: data,
+                        onTap: () => _openPanel(data),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      decoration: _cardDecoration(radius: 18),
+                      child: const Text(
+                        'KARTE',
+                        style: TextStyle(
+                          color: AppColors.deepBlue,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton.filled(
+                      onPressed: () => setState(() => _data = _load()),
+                      icon: const Icon(Icons.refresh_rounded),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Positioned(
+              right: 10,
+              bottom: 112,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: .88),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  child: Text(
+                    MapConfiguration.attribution,
+                    style: TextStyle(fontSize: 10, color: AppColors.navy),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class _MapStationData {
+  const _MapStationData({required this.station, this.live, this.environment});
+  final PegelStation station;
+  final StationLiveData? live;
+  final StationEnvironmentData? environment;
+}
+
+class _MapMarker extends StatelessWidget {
+  const _MapMarker({required this.data, required this.onTap});
+  final _MapStationData data;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = data.live == null
+        ? '–'
+        : '${data.live!.formatValue(data.live!.current.value)} cm';
+    return InkWell(
+      key: ValueKey('map-marker-${data.station.uuid}'),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.blue, width: 1.4),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x2A082E61),
+              blurRadius: 8,
+              offset: Offset(0, 3),
+            ),
+          ],
+        ),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              value,
+              style: const TextStyle(
+                color: AppColors.deepBlue,
+                fontWeight: FontWeight.w900,
+                fontSize: 13,
+              ),
+            ),
+            Text(
+              data.station.name,
+              style: const TextStyle(
+                color: Color(0xFF64738D),
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MapStationPanel extends StatelessWidget {
+  const _MapStationPanel({required this.data, required this.onOpen});
+  final _MapStationData data;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final live = data.live;
+    final change = live?.change24Hours;
+    final level = live == null
+        ? '–'
+        : '${live.formatValue(live.current.value)} cm';
+    final changeText = change == null
+        ? data.station.source == StationSource.vorarlberg
+              ? '24 h nicht verfügbar'
+              : '24 h nicht verfügbar'
+        : '${change >= 0 ? '+' : '−'}${live!.formatChange(change.abs())} cm in 24 h';
+    final temperature = data.environment?.waterTemperatureC;
+    final temperatureSource = EnvironmentService()
+        .configFor(data.station)
+        .waterTemperatureLabel;
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFD7E2F0),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              data.station.name,
+              style: const TextStyle(
+                color: AppColors.deepBlue,
+                fontSize: 21,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _MapPanelValue(label: 'AKTUELLER PEGEL', value: level),
+                ),
+                Expanded(
+                  child: _MapPanelValue(
+                    label: 'VERÄNDERUNG',
+                    value: changeText,
+                  ),
+                ),
+                Expanded(
+                  child: _MapPanelValue(
+                    label: 'WASSERTEMP.',
+                    value: temperature == null
+                        ? '–'
+                        : '${temperature.toStringAsFixed(1).replaceAll('.', ',')} °C',
+                    detail: temperatureSource,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: onOpen,
+                icon: const Icon(Icons.waves_rounded),
+                label: const Text('Station öffnen'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MapPanelValue extends StatelessWidget {
+  const _MapPanelValue({required this.label, required this.value, this.detail});
+  final String label;
+  final String value;
+  final String? detail;
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        label,
+        style: const TextStyle(
+          color: Color(0xFF71809A),
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      if (detail != null) ...[
+        const SizedBox(height: 3),
+        Text(
+          detail!,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Color(0xFF71809A), fontSize: 9),
+        ),
+      ],
+      const SizedBox(height: 4),
+      Text(
+        value,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: AppColors.navy,
+          fontSize: 13,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    ],
   );
 }
 
@@ -1209,123 +1580,125 @@ class _StationSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SafeArea(
-        top: false,
-        child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * .68,
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-          Center(
-            child: Container(
-              width: 42,
-              height: 4,
-              decoration: BoxDecoration(
-                color: const Color(0xFFD7E2F0),
-                borderRadius: BorderRadius.circular(4),
+    top: false,
+    child: SizedBox(
+      height: MediaQuery.sizeOf(context).height * .68,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 42,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD7E2F0),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(height: 22),
-          const Text(
-            'MESSSTELLE AUSWÄHLEN',
-            style: TextStyle(
-              color: AppColors.deepBlue,
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(height: 14),
-          ...stations.map(
-            (station) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Material(
-                color: station.uuid == selectedStation.uuid
-                    ? const Color(0xFFF1F7FF)
-                    : Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(20),
-                  onTap: () => Navigator.pop(context, station),
-                  child: Container(
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
+              const SizedBox(height: 22),
+              const Text(
+                'MESSSTELLE AUSWÄHLEN',
+                style: TextStyle(
+                  color: AppColors.deepBlue,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 14),
+              ...stations.map(
+                (station) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Material(
+                    color: station.uuid == selectedStation.uuid
+                        ? const Color(0xFFF1F7FF)
+                        : Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    child: InkWell(
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: station.uuid == selectedStation.uuid
-                            ? AppColors.blue
-                            : const Color(0xFFE1E9F4),
-                        width: station.uuid == selectedStation.uuid ? 1.5 : 1,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: const BoxDecoration(
-                            color: Color(0xFFEAF3FF),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.location_on_outlined,
-                            color: AppColors.blue,
+                      onTap: () => Navigator.pop(context, station),
+                      child: Container(
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: station.uuid == selectedStation.uuid
+                                ? AppColors.blue
+                                : const Color(0xFFE1E9F4),
+                            width: station.uuid == selectedStation.uuid
+                                ? 1.5
+                                : 1,
                           ),
                         ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                station.name,
-                                style: const TextStyle(
-                                  color: AppColors.navy,
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w800,
-                                ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 42,
+                              height: 42,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFFEAF3FF),
+                                shape: BoxShape.circle,
                               ),
-                              if (station.waterName != null) ...[
-                                const SizedBox(height: 3),
-                                Text(
-                                  station.waterName!,
-                                  style: const TextStyle(
-                                    color: Color(0xFF64738D),
-                                    fontSize: 14,
+                              child: const Icon(
+                                Icons.location_on_outlined,
+                                color: AppColors.blue,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    station.name,
+                                    style: const TextStyle(
+                                      color: AppColors.navy,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w800,
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ],
-                          ),
+                                  if (station.waterName != null) ...[
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      station.waterName!,
+                                      style: const TextStyle(
+                                        color: Color(0xFF64738D),
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            Icon(
+                              station.uuid == selectedStation.uuid
+                                  ? Icons.check_circle_rounded
+                                  : Icons.chevron_right_rounded,
+                              color: station.uuid == selectedStation.uuid
+                                  ? AppColors.blue
+                                  : const Color(0xFF9AABC0),
+                            ),
+                          ],
                         ),
-                        Icon(
-                          station.uuid == selectedStation.uuid
-                              ? Icons.check_circle_rounded
-                              : Icons.chevron_right_rounded,
-                          color: station.uuid == selectedStation.uuid
-                              ? AppColors.blue
-                              : const Color(0xFF9AABC0),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ),
-                ],
-              ),
-            ),
+            ],
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _Change24Hours extends StatelessWidget {
@@ -2053,12 +2426,16 @@ class _BottomNavigation extends StatelessWidget {
   const _BottomNavigation({
     this.onLive,
     this.onAnalysis,
+    this.onMap,
     this.analysisActive = false,
+    this.mapActive = false,
   });
 
   final VoidCallback? onLive;
   final VoidCallback? onAnalysis;
+  final VoidCallback? onMap;
   final bool analysisActive;
+  final bool mapActive;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -2080,7 +2457,7 @@ class _BottomNavigation extends StatelessWidget {
         _NavItem(
           icon: Icons.waves_rounded,
           label: 'Live',
-          active: !analysisActive,
+          active: !analysisActive && !mapActive,
           onTap: onLive,
         ),
         _NavItem(
@@ -2089,7 +2466,13 @@ class _BottomNavigation extends StatelessWidget {
           active: analysisActive,
           onTap: onAnalysis,
         ),
-        const _NavItem(icon: Icons.location_on_outlined, label: 'Karte'),
+        _NavItem(
+          key: const ValueKey('nav-map'),
+          icon: Icons.location_on_outlined,
+          label: 'Karte',
+          active: mapActive,
+          onTap: onMap,
+        ),
         const _NavItem(icon: Icons.person_outline_rounded, label: 'Mehr'),
       ],
     ),
@@ -2098,6 +2481,7 @@ class _BottomNavigation extends StatelessWidget {
 
 class _NavItem extends StatelessWidget {
   const _NavItem({
+    super.key,
     required this.icon,
     required this.label,
     this.active = false,
