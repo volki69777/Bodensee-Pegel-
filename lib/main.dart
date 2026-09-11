@@ -94,8 +94,33 @@ class BodenseePegelApp extends StatelessWidget {
   );
 }
 
+enum AppDestination { live, analysis, map, more }
+
+void _navigateTo(
+  BuildContext context,
+  AppDestination destination, {
+  PegelStation? initialStation,
+}) {
+  Navigator.of(context).pushAndRemoveUntil(
+    MaterialPageRoute<void>(
+      builder: (_) => DashboardPage(
+        initialDestination: destination,
+        initialStation: initialStation,
+      ),
+    ),
+    (_) => false,
+  );
+}
+
 class DashboardPage extends StatefulWidget {
-  const DashboardPage({super.key});
+  const DashboardPage({
+    super.key,
+    this.initialDestination = AppDestination.live,
+    this.initialStation,
+  });
+
+  final AppDestination initialDestination;
+  final PegelStation? initialStation;
 
   @override
   State<DashboardPage> createState() => _DashboardPageState();
@@ -130,12 +155,36 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
+    _selectedStation = widget.initialStation ?? PegelOnlineService.konstanz;
     _stations = Future.value(_availableStations);
     _liveData = _loadCachedLiveData(_selectedStation);
     _environmentData = _loadEnvironmentData(_selectedStation);
     _insight = _loadCachedInsight(_selectedStation, _liveData);
     _favoriteUuids = _loadFavoriteUuids();
-    _restoreStartStation();
+    if (widget.initialStation == null) _restoreStartStation();
+    if (widget.initialDestination != AppDestination.live) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _openInitialDestination(),
+      );
+    }
+  }
+
+  void _openInitialDestination() {
+    if (!mounted) return;
+    final page = switch (widget.initialDestination) {
+      AppDestination.live => null,
+      AppDestination.analysis => const AnalysisPage(),
+      AppDestination.map => MapPage(
+        selectedStation: _selectedStation,
+        loadLiveData: _loadCachedLiveData,
+        loadEnvironmentData: _environmentService.fetchFor,
+      ),
+      AppDestination.more => const MorePage(),
+    };
+    if (page != null) {
+      Navigator.of(context)
+          .pushReplacement(MaterialPageRoute<void>(builder: (_) => page));
+    }
   }
 
   Future<void> _restoreStartStation() async {
@@ -350,29 +399,12 @@ class _DashboardPageState extends State<DashboardPage> {
   double _waterLevelCm(double waterLevelMasl, double referenceMasl) =>
       (waterLevelMasl - referenceMasl) * 100;
 
-  Future<void> _openMap() async {
-    final station = await Navigator.of(context).push<PegelStation>(
-      MaterialPageRoute<PegelStation>(
-        builder: (_) => MapPage(
-          selectedStation: _selectedStation,
-          loadLiveData: _loadCachedLiveData,
-          loadEnvironmentData: _environmentService.fetchFor,
-        ),
-      ),
-    );
-    if (station != null && mounted) _selectStation(station);
-  }
-
-  Future<void> _openMore() => Navigator.of(context)
-      .push<void>(MaterialPageRoute<void>(builder: (_) => const MorePage()));
-
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
-      onAnalysis: () => Navigator.of(context)
-          .push(MaterialPageRoute<void>(builder: (_) => const AnalysisPage())),
-      onMap: _openMap,
-      onMore: _openMore,
+      onAnalysis: () => _navigateTo(context, AppDestination.analysis),
+      onMap: () => _navigateTo(context, AppDestination.map),
+      onMore: () => _navigateTo(context, AppDestination.more),
     ),
     body: Stack(
       children: [
@@ -526,13 +558,17 @@ class _MapPageState extends State<MapPage> {
         onOpen: () => Navigator.of(context).pop(data.station),
       ),
     );
-    if (station != null && mounted) Navigator.of(context).pop(station);
+    if (station != null && mounted) {
+      _navigateTo(context, AppDestination.live, initialStation: station);
+    }
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
-      onLive: () => Navigator.of(context).pop(),
+      onLive: () => _navigateTo(context, AppDestination.live),
+      onAnalysis: () => _navigateTo(context, AppDestination.analysis),
+      onMore: () => _navigateTo(context, AppDestination.more),
       mapActive: true,
     ),
     body: FutureBuilder<List<_MapStationData>>(
@@ -902,9 +938,9 @@ class _MorePageState extends State<MorePage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
-      onLive: () => Navigator.of(context).pop(),
-      onAnalysis: () => Navigator.of(context)
-          .push(MaterialPageRoute<void>(builder: (_) => const AnalysisPage())),
+      onLive: () => _navigateTo(context, AppDestination.live),
+      onAnalysis: () => _navigateTo(context, AppDestination.analysis),
+      onMap: () => _navigateTo(context, AppDestination.map),
       moreActive: true,
     ),
     body: Stack(
@@ -1519,7 +1555,9 @@ class _AnalysisPageState extends State<AnalysisPage> {
     final periods = _analysisService.periodsFor(_station);
     return Scaffold(
       bottomNavigationBar: _BottomNavigation(
-        onLive: () => Navigator.of(context).pop(),
+        onLive: () => _navigateTo(context, AppDestination.live),
+        onMap: () => _navigateTo(context, AppDestination.map),
+        onMore: () => _navigateTo(context, AppDestination.more),
         analysisActive: true,
       ),
       body: Stack(

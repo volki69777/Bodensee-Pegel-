@@ -160,14 +160,45 @@ void main() {
     await tester.pumpWidget(const BodenseePegelApp());
 
     await tester.tap(find.byKey(const ValueKey('nav-map')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
 
     expect(find.byType(MapPage), findsOneWidget);
     expect(find.text('Live'), findsOneWidget);
     expect(find.text('Analyse'), findsOneWidget);
     expect(find.text('Karte'), findsOneWidget);
     expect(find.text('Mehr'), findsOneWidget);
+  });
+
+  testWidgets('switches every bottom navigation destination repeatedly', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+
+    await tester.tap(find.text('Analyse'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AnalysisPage), findsOneWidget);
+
+    await tester.tap(find.text('Karte'));
+    await tester.pumpAndSettle();
+    expect(find.byType(MapPage), findsOneWidget);
+
+    await tester.tap(find.text('Mehr'));
+    await tester.pumpAndSettle();
+    expect(find.byType(MorePage), findsOneWidget);
+
+    await tester.tap(find.text('Analyse'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AnalysisPage), findsOneWidget);
+
+    await tester.tap(find.text('Live'));
+    await tester.pumpAndSettle();
+    expect(find.byType(DashboardPage), findsOneWidget);
+
+    await tester.tap(find.text('Karte'));
+    await tester.pumpAndSettle();
+    expect(find.byType(MapPage), findsOneWidget);
   });
 
   testWidgets('opens Mehr and persists its configured start station', (

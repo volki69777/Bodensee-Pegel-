@@ -50,14 +50,14 @@ class EnvironmentService {
     stationUuid: 'aa9179c1-17ef-4c61-a48a-74193fa7bfdf',
     windSourceLabel: 'DWD 02712',
     airSourceLabel: 'DWD 02712',
-    waterTemperatureLabel: 'Messstation Lindau',
+    waterTemperatureLabel: 'Bodensee · Messstation Lindau',
     waterTemperatureAttribution: 'Datenquelle: Bayerisches Landesamt für Umwelt, www.lfu.bayern.de (CC BY 4.0)',
   );
   static const romanshorn = EnvironmentStationConfig(
     stationUuid: 'bafu-2032',
     windSourceLabel: 'Güttingen',
     airSourceLabel: 'Güttingen',
-    waterTemperatureLabel: 'Messstation Lindau',
+    waterTemperatureLabel: 'Bodensee · Messstation Lindau',
     waterTemperatureAttribution: 'Datenquelle: Bayerisches Landesamt für Umwelt, www.lfu.bayern.de (CC BY 4.0)',
   );
   static const bregenz = EnvironmentStationConfig(
