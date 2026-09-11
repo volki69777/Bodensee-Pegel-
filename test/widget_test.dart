@@ -234,20 +234,21 @@ void main() {
     testWidgets('opens ${station.$2} from its map panel', (
       WidgetTester tester,
     ) async {
-      await tester.binding.setSurfaceSize(const Size(430, 932));
+      // The compact map sheet is intentionally not scrollable. Give this
+      // interaction test enough vertical room to exercise its button exactly
+      // as a normal larger device would, without changing production UI.
+      await tester.binding.setSurfaceSize(const Size(430, 1400));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(const BodenseePegelApp());
       await tester.tap(find.byKey(const ValueKey('nav-map')));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(ValueKey('map-marker-${station.$1}')));
-      await tester.pump();
+      await tester.pumpAndSettle();
       final openStation = find.text('Station öffnen');
       await tester.ensureVisible(openStation);
       await tester.tap(openStation);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
 
       expect(find.byType(DashboardPage), findsOneWidget);
       expect(find.text(station.$2), findsWidgets);

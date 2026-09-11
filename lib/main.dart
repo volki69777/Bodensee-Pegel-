@@ -11,6 +11,7 @@ import 'analysis_service.dart';
 import 'bafu_hydro_service.dart';
 import 'environment_service.dart';
 import 'favorites_service.dart';
+import 'insight_service.dart';
 import 'map_configuration.dart';
 import 'pegelonline_service.dart';
 import 'station_data_cache.dart';
@@ -115,11 +116,15 @@ class _DashboardPageState extends State<DashboardPage> {
   final _environmentService = EnvironmentService();
   final _preferences = SharedPreferencesAsync();
   final _favoritesService = FavoritesService();
+  final _analysisService = AnalysisService();
+  final _insightService = InsightService();
   final _liveDataCache = StationDataCache<StationLiveData>();
+  final _insightCache = StationDataCache<BodenseeInsight?>();
   late Future<List<PegelStation>> _stations;
   late Future<StationLiveData> _liveData;
   late Future<StationEnvironmentData> _environmentData;
   late Future<List<String>> _favoriteUuids;
+  late Future<BodenseeInsight?> _insight;
   PegelStation _selectedStation = PegelOnlineService.konstanz;
 
   @override
@@ -128,6 +133,7 @@ class _DashboardPageState extends State<DashboardPage> {
     _stations = Future.value(_availableStations);
     _liveData = _loadCachedLiveData(_selectedStation);
     _environmentData = _loadEnvironmentData(_selectedStation);
+    _insight = _loadCachedInsight(_selectedStation, _liveData);
     _favoriteUuids = _loadFavoriteUuids();
     _restoreStartStation();
   }
@@ -160,6 +166,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _selectedStation = station;
       _liveData = _loadCachedLiveData(station);
       _environmentData = _loadEnvironmentData(station);
+      _insight = _loadCachedInsight(station, _liveData);
     });
     if (persist) {
       _preferences.setString(_lastSelectedStationPreferenceKey, station.uuid);
@@ -183,8 +190,10 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _refresh() => setState(() {
     _liveDataCache.invalidate(_selectedStation.uuid);
+    _insightCache.invalidate(_selectedStation.uuid);
     _liveData = _loadCachedLiveData(_selectedStation);
     _environmentData = _loadEnvironmentData(_selectedStation);
+    _insight = _loadCachedInsight(_selectedStation, _liveData);
   });
 
   Future<List<String>> _loadFavoriteUuids() async {
@@ -209,6 +218,57 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Future<StationLiveData> _loadCachedLiveData(PegelStation station) =>
       _liveDataCache.get(station.uuid, () => _loadLiveData(station));
+
+  Future<BodenseeInsight?> _loadCachedInsight(
+    PegelStation station,
+    Future<StationLiveData> liveData,
+  ) => _insightCache.get(station.uuid, () => _loadInsight(station, liveData));
+
+  Future<BodenseeInsight?> _loadInsight(
+    PegelStation station,
+    Future<StationLiveData> liveFuture,
+  ) async {
+    try {
+      final live = await liveFuture;
+      return switch (station.source) {
+        StationSource.pegelOnline => _insightService.fromKonstanz(
+          change24HoursCm: live.change24Hours,
+        ),
+        StationSource.bafu => _insightService.fromRomanshorn(
+          change24HoursCm: live.change24Hours,
+          seasonalReference: await _seasonalReferenceOrNull(),
+          forecast: live.forecast,
+          currentTimestamp: live.current.timestamp,
+        ),
+        StationSource.vorarlberg => _insightService.fromBregenz(
+          change7DaysCm: await _bregenz7DayChangeOrNull(station),
+        ),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<SeasonalReference?> _seasonalReferenceOrNull() async {
+    try {
+      return await _analysisService.fetchRomanshornSeasonalReference();
+    } on AnalysisException {
+      return null;
+    }
+  }
+
+  Future<double?> _bregenz7DayChangeOrNull(PegelStation station) async {
+    try {
+      final series = await _analysisService.fetch(
+        station,
+        AnalysisPeriod.days7,
+      );
+      if (series.readings.length < 2) return null;
+      return series.readings.last.valueCm - series.readings.first.valueCm;
+    } on AnalysisException {
+      return null;
+    }
+  }
 
   Future<StationEnvironmentData> _loadEnvironmentData(PegelStation station) {
     final request = _environmentService.fetchFor(station);
@@ -366,6 +426,20 @@ class _DashboardPageState extends State<DashboardPage> {
                         ? snapshot.data
                         : null,
                   ),
+                ),
+                FutureBuilder<BodenseeInsight?>(
+                  key: ValueKey('insight-${_selectedStation.uuid}'),
+                  future: _insight,
+                  builder: (context, snapshot) {
+                    final insight = snapshot.hasData && !snapshot.hasError
+                        ? snapshot.data
+                        : null;
+                    if (insight == null) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 24),
+                      child: BodenseeInsightCard(insight: insight),
+                    );
+                  },
                 ),
                 const SizedBox(height: 24),
                 FutureBuilder<List<String>>(
@@ -2294,6 +2368,68 @@ class _LiveLevelCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class BodenseeInsightCard extends StatelessWidget {
+  const BodenseeInsightCard({super.key, required this.insight});
+
+  final BodenseeInsight insight;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    key: const ValueKey('bodensee-insight-card'),
+    width: double.infinity,
+    padding: const EdgeInsets.all(18),
+    decoration: _cardDecoration(radius: 24),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: const BoxDecoration(
+            color: Color(0xFFE8F2FF),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.lightbulb_outline_rounded,
+            color: AppColors.blue,
+            size: 25,
+          ),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'BODENSEE INSIGHT',
+                style: TextStyle(
+                  color: AppColors.deepBlue,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: .2,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                insight.text,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.navy,
+                  fontSize: 15,
+                  height: 1.3,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _FavoritesSection extends StatelessWidget {

@@ -112,6 +112,11 @@ class AnalysisService {
     );
   }
 
+  /// Returns the official BAFU calendar-day reference for Romanshorn without
+  /// loading a separate chart series.
+  Future<SeasonalReference> fetchRomanshornSeasonalReference() =>
+      _fetchRomanshornSeasonalReference();
+
   Future<SeasonalReference> _fetchRomanshornSeasonalReference() async {
     try {
       final current = await _bafuService.fetchRomanshornCurrentReading();
