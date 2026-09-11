@@ -1,10 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
 import 'package:bodensee_pegel/main.dart';
+import 'package:bodensee_pegel/favorites_service.dart';
+import 'package:bodensee_pegel/station_data_cache.dart';
 
 void main() {
   setUp(() {
@@ -26,6 +31,121 @@ void main() {
 
     expect(find.text('Bodensee Pegel+'), findsOneWidget);
     expect(find.byType(DashboardPage), findsOneWidget);
+  });
+
+  test(
+    'uses all three stations as default favorites and persists changes',
+    () async {
+      final service = FavoritesService();
+      const stations = ['konstanz', 'romanshorn', 'bregenz'];
+
+      expect(
+        await service.load(validStationUuids: stations),
+        orderedEquals(stations),
+      );
+
+      final withoutRomanshorn = await service.toggle(
+        stationUuid: 'romanshorn',
+        currentFavorites: stations,
+      );
+      expect(withoutRomanshorn, orderedEquals(['konstanz', 'bregenz']));
+      expect(
+        await FavoritesService().load(validStationUuids: stations),
+        orderedEquals(['konstanz', 'bregenz']),
+      );
+    },
+  );
+
+  test('shares parallel station requests through the cache', () async {
+    final cache = StationDataCache<int>();
+    final completer = Completer<int>();
+    var requests = 0;
+    Future<int> load() {
+      requests++;
+      return completer.future;
+    }
+
+    final first = cache.get('konstanz', load);
+    final second = cache.get('konstanz', load);
+    expect(identical(first, second), isTrue);
+    expect(requests, 1);
+
+    completer.complete(42);
+    expect(await first, 42);
+    cache.invalidate('konstanz');
+    expect(await cache.get('konstanz', () async => ++requests), 2);
+  });
+
+  testWidgets('shows and clears the favorites empty state with the star', (
+    WidgetTester tester,
+  ) async {
+    await SharedPreferencesAsync().setStringList(
+      FavoritesService.preferenceKey,
+      const [],
+    );
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pump();
+
+    expect(
+      find.text('Noch keine Favoriten – Stern bei einer Station wählen.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('favorite-toggle')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.byKey(
+        const ValueKey('favorite-card-aa9179c1-17ef-4c61-a48a-74193fa7bfdf'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('removes and restores the current station with the star', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    const konstanzCard = ValueKey(
+      'favorite-card-aa9179c1-17ef-4c61-a48a-74193fa7bfdf',
+    );
+    expect(find.byKey(const ValueKey('favorite-toggle')), findsOneWidget);
+    expect(find.byIcon(Icons.star_rounded), findsOneWidget);
+    expect(find.byKey(konstanzCard), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('favorite-toggle')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byIcon(Icons.star_border_rounded), findsOneWidget);
+    expect(find.byKey(konstanzCard), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('favorite-toggle')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byIcon(Icons.star_rounded), findsOneWidget);
+    expect(find.byKey(konstanzCard), findsOneWidget);
+  });
+
+  testWidgets('selects a favorite station directly on the live page', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 932));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pump();
+    await tester.pump();
+
+    final romanshorn = find.byKey(const ValueKey('favorite-card-bafu-2032'));
+    await tester.ensureVisible(romanshorn);
+    await tester.tap(romanshorn);
+    await tester.pump();
+
+    expect(find.text('ROMANSHORN'), findsWidgets);
   });
 
   testWidgets('shows the analysis view', (WidgetTester tester) async {
@@ -82,7 +202,9 @@ void main() {
 
     await tester.tap(find.byTooltip('Zurück'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Über Bodensee Pegel+'));
+    final about = find.text('Über Bodensee Pegel+');
+    await tester.ensureVisible(about);
+    await tester.tap(about);
     await tester.pumpAndSettle();
     expect(find.byType(AboutPage), findsOneWidget);
     expect(find.text('BODENSEE PEGEL+'), findsOneWidget);
@@ -100,7 +222,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
-      expect(find.text('DATENQUELLEN & MESSSTATIONEN'), findsOneWidget);
+      expect(find.text('INFORMATIONEN'), findsOneWidget);
     });
   }
 
@@ -121,7 +243,9 @@ void main() {
 
       await tester.tap(find.byKey(ValueKey('map-marker-${station.$1}')));
       await tester.pump();
-      await tester.tap(find.text('Station öffnen'));
+      final openStation = find.text('Station öffnen');
+      await tester.ensureVisible(openStation);
+      await tester.tap(openStation);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
 

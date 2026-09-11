@@ -10,8 +10,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'analysis_service.dart';
 import 'bafu_hydro_service.dart';
 import 'environment_service.dart';
+import 'favorites_service.dart';
 import 'map_configuration.dart';
 import 'pegelonline_service.dart';
+import 'station_data_cache.dart';
 import 'vorarlberg_hydro_service.dart';
 
 void main() => runApp(const BodenseePegelApp());
@@ -101,27 +103,32 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   static const _lastSelectedStationPreferenceKey = 'selected_station_uuid';
   static const _startStationPreferenceKey = 'start_station_uuid';
+  static const _availableStations = <PegelStation>[
+    PegelOnlineService.konstanz,
+    BafuHydroService.romanshorn,
+    VorarlbergHydroService.bregenz,
+  ];
 
   final _pegelOnlineService = PegelOnlineService();
   final _bafuService = BafuHydroService();
   final _vorarlbergService = VorarlbergHydroService();
   final _environmentService = EnvironmentService();
   final _preferences = SharedPreferencesAsync();
+  final _favoritesService = FavoritesService();
+  final _liveDataCache = StationDataCache<StationLiveData>();
   late Future<List<PegelStation>> _stations;
   late Future<StationLiveData> _liveData;
   late Future<StationEnvironmentData> _environmentData;
+  late Future<List<String>> _favoriteUuids;
   PegelStation _selectedStation = PegelOnlineService.konstanz;
 
   @override
   void initState() {
     super.initState();
-    _stations = Future.value(const [
-      PegelOnlineService.konstanz,
-      BafuHydroService.romanshorn,
-      VorarlbergHydroService.bregenz,
-    ]);
-    _liveData = _loadLiveData(_selectedStation);
-    _environmentData = _environmentService.fetchFor(_selectedStation);
+    _stations = Future.value(_availableStations);
+    _liveData = _loadCachedLiveData(_selectedStation);
+    _environmentData = _loadEnvironmentData(_selectedStation);
+    _favoriteUuids = _loadFavoriteUuids();
     _restoreStartStation();
   }
 
@@ -151,8 +158,8 @@ class _DashboardPageState extends State<DashboardPage> {
     if (station.uuid == _selectedStation.uuid) return;
     setState(() {
       _selectedStation = station;
-      _liveData = _loadLiveData(station);
-      _environmentData = _environmentService.fetchFor(station);
+      _liveData = _loadCachedLiveData(station);
+      _environmentData = _loadEnvironmentData(station);
     });
     if (persist) {
       _preferences.setString(_lastSelectedStationPreferenceKey, station.uuid);
@@ -175,9 +182,39 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   void _refresh() => setState(() {
-    _liveData = _loadLiveData(_selectedStation);
-    _environmentData = _environmentService.fetchFor(_selectedStation);
+    _liveDataCache.invalidate(_selectedStation.uuid);
+    _liveData = _loadCachedLiveData(_selectedStation);
+    _environmentData = _loadEnvironmentData(_selectedStation);
   });
+
+  Future<List<String>> _loadFavoriteUuids() async {
+    final stations = await _stations;
+    return _favoritesService.load(
+      validStationUuids: stations.map((station) => station.uuid).toList(),
+    );
+  }
+
+  Future<void> _toggleFavorite() async {
+    final current = await _favoriteUuids;
+    final updated = await _favoritesService.toggle(
+      stationUuid: _selectedStation.uuid,
+      currentFavorites: current,
+    );
+    if (mounted) {
+      setState(() {
+        _favoriteUuids = Future.value(updated);
+      });
+    }
+  }
+
+  Future<StationLiveData> _loadCachedLiveData(PegelStation station) =>
+      _liveDataCache.get(station.uuid, () => _loadLiveData(station));
+
+  Future<StationEnvironmentData> _loadEnvironmentData(PegelStation station) {
+    final request = _environmentService.fetchFor(station);
+    request.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return request;
+  }
 
   Future<StationLiveData> _loadLiveData(PegelStation station) async {
     if (station.source == StationSource.bafu) {
@@ -258,7 +295,7 @@ class _DashboardPageState extends State<DashboardPage> {
       MaterialPageRoute<PegelStation>(
         builder: (_) => MapPage(
           selectedStation: _selectedStation,
-          loadLiveData: _loadLiveData,
+          loadLiveData: _loadCachedLiveData,
           loadEnvironmentData: _environmentService.fetchFor,
         ),
       ),
@@ -266,9 +303,8 @@ class _DashboardPageState extends State<DashboardPage> {
     if (station != null && mounted) _selectStation(station);
   }
 
-  Future<void> _openMore() => Navigator.of(context).push<void>(
-    MaterialPageRoute<void>(builder: (_) => const MorePage()),
-  );
+  Future<void> _openMore() => Navigator.of(context)
+      .push<void>(MaterialPageRoute<void>(builder: (_) => const MorePage()));
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -300,6 +336,11 @@ class _DashboardPageState extends State<DashboardPage> {
                           liveSnapshot: liveSnapshot,
                           onOpenStationSelector: _openStationSelector,
                           onRefresh: _refresh,
+                          isFavorite: _favoriteUuids.then(
+                            (favorites) =>
+                                favorites.contains(_selectedStation.uuid),
+                          ),
+                          onToggleFavorite: _toggleFavorite,
                         ),
                       ),
                 ),
@@ -324,6 +365,23 @@ class _DashboardPageState extends State<DashboardPage> {
                     data: snapshot.hasData && !snapshot.hasError
                         ? snapshot.data
                         : null,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                FutureBuilder<List<String>>(
+                  future: _favoriteUuids,
+                  builder: (context, snapshot) => _FavoritesSection(
+                    stations: (snapshot.data ?? const <String>[])
+                        .map(
+                          (uuid) => _availableStations
+                              .where((station) => station.uuid == uuid)
+                              .firstOrNull,
+                        )
+                        .whereType<PegelStation>()
+                        .toList(),
+                    selectedStation: _selectedStation,
+                    loadLiveData: _loadCachedLiveData,
+                    onSelectStation: _selectStation,
                   ),
                 ),
               ],
@@ -732,10 +790,8 @@ class _MorePageState extends State<MorePage> {
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (_) => _StationSelector(
-        stations: _stations,
-        selectedStation: _startStation,
-      ),
+      builder: (_) =>
+          _StationSelector(stations: _stations, selectedStation: _startStation),
     );
     if (station == null || !mounted || station.uuid == _startStation.uuid) {
       return;
@@ -746,7 +802,9 @@ class _MorePageState extends State<MorePage> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Startstation konnte nicht gespeichert werden.')),
+        const SnackBar(
+          content: Text('Startstation konnte nicht gespeichert werden.'),
+        ),
       );
     }
   }
@@ -771,9 +829,8 @@ class _MorePageState extends State<MorePage> {
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
       onLive: () => Navigator.of(context).pop(),
-      onAnalysis: () => Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => const AnalysisPage()),
-      ),
+      onAnalysis: () => Navigator.of(context)
+          .push(MaterialPageRoute<void>(builder: (_) => const AnalysisPage())),
       moreActive: true,
     ),
     body: Stack(
@@ -809,8 +866,7 @@ class _MorePageState extends State<MorePage> {
                       const _MoreInfoRow(
                         icon: Icons.refresh_rounded,
                         title: 'Aktualisierung',
-                        detail:
-                            'Live-Daten werden beim Öffnen und manuell aktualisiert.',
+                        detail: 'Live-Daten werden beim Öffnen und manuell aktualisiert.',
                       ),
                     ],
                   ),
@@ -833,7 +889,8 @@ class _MorePageState extends State<MorePage> {
                       _MoreActionRow(
                         icon: Icons.hub_outlined,
                         title: 'Datenquellen & Messstationen',
-                        detail: 'Offizielle Quellen, Messstationen und Lizenzen',
+                        detail:
+                            'Offizielle Quellen, Messstationen und Lizenzen',
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(
                             builder: (_) => const DataSourcesPage(),
@@ -1114,7 +1171,10 @@ class _MoreActionRow extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     detail!,
-                    style: const TextStyle(color: Color(0xFF71809A), fontSize: 13),
+                    style: const TextStyle(
+                      color: Color(0xFF71809A),
+                      fontSize: 13,
+                    ),
                   ),
                 ],
               ],
@@ -1188,7 +1248,9 @@ class _MoreIcon extends StatelessWidget {
     width: 40,
     height: 40,
     decoration: BoxDecoration(
-      color: (muted ? const Color(0xFF8B98AC) : AppColors.blue).withValues(alpha: .10),
+      color: (muted ? const Color(0xFF8B98AC) : AppColors.blue).withValues(
+        alpha: .10,
+      ),
       shape: BoxShape.circle,
     ),
     child: Icon(icon, color: muted ? const Color(0xFF8B98AC) : AppColors.blue),
@@ -1222,7 +1284,10 @@ class _SourceRow extends StatelessWidget {
             IconButton(
               tooltip: 'Offizielle Quelle öffnen',
               onPressed: onOpen,
-              icon: const Icon(Icons.open_in_new_rounded, color: AppColors.blue),
+              icon: const Icon(
+                Icons.open_in_new_rounded,
+                color: AppColors.blue,
+              ),
             ),
           ],
         ),
@@ -1242,7 +1307,11 @@ class _SourceRow extends StatelessWidget {
         const SizedBox(height: 5),
         Text(
           source.licence,
-          style: const TextStyle(color: AppColors.blue, fontSize: 11, height: 1.28),
+          style: const TextStyle(
+            color: AppColors.blue,
+            fontSize: 11,
+            height: 1.28,
+          ),
         ),
         const Padding(
           padding: EdgeInsets.only(top: 14),
@@ -2051,6 +2120,8 @@ class _LiveLevelCard extends StatelessWidget {
     required this.liveSnapshot,
     required this.onOpenStationSelector,
     required this.onRefresh,
+    required this.isFavorite,
+    required this.onToggleFavorite,
   });
 
   final PegelStation selectedStation;
@@ -2058,6 +2129,8 @@ class _LiveLevelCard extends StatelessWidget {
   final AsyncSnapshot<StationLiveData> liveSnapshot;
   final ValueChanged<List<PegelStation>> onOpenStationSelector;
   final VoidCallback onRefresh;
+  final Future<bool> isFavorite;
+  final VoidCallback onToggleFavorite;
 
   @override
   Widget build(BuildContext context) {
@@ -2124,6 +2197,20 @@ class _LiveLevelCard extends StatelessWidget {
                         ],
                       ),
                     ),
+                  ),
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('favorite-toggle'),
+                onPressed: onToggleFavorite,
+                tooltip: 'Favorit ändern',
+                icon: FutureBuilder<bool>(
+                  future: isFavorite,
+                  builder: (context, snapshot) => Icon(
+                    snapshot.data == true
+                        ? Icons.star_rounded
+                        : Icons.star_border_rounded,
+                    color: AppColors.blue,
                   ),
                 ),
               ),
@@ -2207,6 +2294,201 @@ class _LiveLevelCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _FavoritesSection extends StatelessWidget {
+  const _FavoritesSection({
+    required this.stations,
+    required this.selectedStation,
+    required this.loadLiveData,
+    required this.onSelectStation,
+  });
+
+  final List<PegelStation> stations;
+  final PegelStation selectedStation;
+  final Future<StationLiveData> Function(PegelStation) loadLiveData;
+  final ValueChanged<PegelStation> onSelectStation;
+
+  @override
+  Widget build(BuildContext context) {
+    if (stations.isEmpty) {
+      return const _FavoritesEmptyState();
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 9),
+          child: Text(
+            'FAVORITEN',
+            style: TextStyle(
+              color: AppColors.navy,
+              fontSize: 14,
+              fontWeight: FontWeight.w900,
+              letterSpacing: .5,
+            ),
+          ),
+        ),
+        SizedBox(
+          height: 126,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.only(right: 2),
+            itemCount: stations.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              final station = stations[index];
+              return _FavoriteStationCard(
+                key: ValueKey('favorite-card-${station.uuid}'),
+                station: station,
+                selected: station.uuid == selectedStation.uuid,
+                liveData: loadLiveData(station),
+                onTap: () => onSelectStation(station),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _FavoritesEmptyState extends StatelessWidget {
+  const _FavoritesEmptyState();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(18),
+    decoration: _cardDecoration(radius: 22),
+    child: const Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'FAVORITEN',
+          style: TextStyle(
+            color: AppColors.navy,
+            fontSize: 14,
+            fontWeight: FontWeight.w900,
+            letterSpacing: .5,
+          ),
+        ),
+        SizedBox(height: 8),
+        Text(
+          'Noch keine Favoriten – Stern bei einer Station wählen.',
+          style: TextStyle(color: Color(0xFF64738D), fontSize: 14),
+        ),
+      ],
+    ),
+  );
+}
+
+class _FavoriteStationCard extends StatelessWidget {
+  const _FavoriteStationCard({
+    super.key,
+    required this.station,
+    required this.selected,
+    required this.liveData,
+    required this.onTap,
+  });
+
+  final PegelStation station;
+  final bool selected;
+  final Future<StationLiveData> liveData;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 164,
+    child: Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(22),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(22),
+        child: Container(
+          padding: const EdgeInsets.all(15),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: selected ? AppColors.blue : const Color(0xFFE1E9F4),
+              width: selected ? 1.6 : 1,
+            ),
+            boxShadow: selected
+                ? const [
+                    BoxShadow(
+                      color: Color(0x160879EE),
+                      blurRadius: 14,
+                      offset: Offset(0, 5),
+                    ),
+                  ]
+                : const [],
+          ),
+          child: FutureBuilder<StationLiveData>(
+            future: liveData,
+            builder: (context, snapshot) {
+              final data = snapshot.hasData && !snapshot.hasError
+                  ? snapshot.data
+                  : null;
+              final level = data == null
+                  ? '–'
+                  : '${data.formatValue(data.current.value)} ${data.unit}';
+              final change = data?.change24Hours;
+              final detail = change == null
+                  ? '24 h nicht verfügbar'
+                  : '${change > 0
+                        ? '+'
+                        : change < 0
+                        ? '−'
+                        : '±'}${data!.formatChange(change.abs())} ${data.unit} · 24 h';
+              // A water-level change is information, not a warning. Warning
+              // colours remain reserved for future, official alert states.
+              final detailColor = change == null
+                  ? const Color(0xFF71809A)
+                  : AppColors.blue;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    station.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.navy,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    level,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.deepBlue,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    detail,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: detailColor,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _StationSelector extends StatelessWidget {
@@ -2368,11 +2650,10 @@ class _Change24Hours extends StatelessWidget {
         : '±';
     final value = data?.formatChange(change.abs()) ?? '';
     final unit = data!.unit;
-    final color = change == 0
-        ? const Color(0xFF64738D)
-        : change > 0
-        ? AppColors.green
-        : AppColors.red;
+    // A 24-hour trend describes a measurement only. Colour is therefore
+    // deliberately neutral; warning colours remain reserved for official
+    // warning and danger states.
+    final color = change == 0 ? const Color(0xFF64738D) : AppColors.blue;
     final icon = change > 0
         ? Icons.arrow_upward_rounded
         : change < 0
@@ -3083,7 +3364,7 @@ class _BottomNavigation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    height: 99,
+    height: 113,
     padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
     decoration: const BoxDecoration(
       color: Colors.white,
@@ -3096,36 +3377,52 @@ class _BottomNavigation extends StatelessWidget {
       ],
     ),
     child: Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
       children: [
-        _NavItem(
-          icon: Icons.waves_rounded,
-          label: 'Live',
-          active: !analysisActive && !mapActive && !moreActive,
-          onTap: onLive,
+        Expanded(
+          child: Center(
+            child: _NavItem(
+              icon: Icons.waves_rounded,
+              label: 'Live',
+              active: !analysisActive && !mapActive && !moreActive,
+              onTap: onLive,
+            ),
+          ),
         ),
-        _NavItem(
-          icon: Icons.query_stats_rounded,
-          label: 'Analyse',
-          active: analysisActive,
-          onTap: onAnalysis,
+        Expanded(
+          child: Center(
+            child: _NavItem(
+              icon: Icons.query_stats_rounded,
+              label: 'Analyse',
+              active: analysisActive,
+              onTap: onAnalysis,
+            ),
+          ),
         ),
-        _NavItem(
-          key: const ValueKey('nav-map'),
-          icon: Icons.location_on_outlined,
-          label: 'Karte',
-          active: mapActive,
-          onTap: onMap,
+        Expanded(
+          child: Center(
+            child: _NavItem(
+              key: const ValueKey('nav-map'),
+              icon: Icons.location_on_outlined,
+              label: 'Karte',
+              active: mapActive,
+              onTap: onMap,
+            ),
+          ),
         ),
-        _NavItem(
-          key: const ValueKey('nav-more'),
-          icon: Icons.person_outline_rounded,
-          label: 'Mehr',
-          active: moreActive,
-          onTap: onMore ??
-              () => Navigator.of(
-                context,
-              ).push(MaterialPageRoute<void>(builder: (_) => const MorePage())),
+        Expanded(
+          child: Center(
+            child: _NavItem(
+              key: const ValueKey('nav-more'),
+              icon: Icons.person_outline_rounded,
+              label: 'Mehr',
+              active: moreActive,
+              onTap:
+                  onMore ??
+                  () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(builder: (_) => const MorePage()),
+                  ),
+            ),
+          ),
         ),
       ],
     ),
@@ -3154,7 +3451,7 @@ class _NavItem extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 21, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           decoration: BoxDecoration(
             color: active ? const Color(0xFFE7F1FF) : Colors.transparent,
             borderRadius: BorderRadius.circular(20),
