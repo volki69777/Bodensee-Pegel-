@@ -743,9 +743,10 @@ class _MapStationPanel extends StatelessWidget {
               : '24 h nicht verfügbar'
         : '${change >= 0 ? '+' : '−'}${live!.formatChange(change.abs())} cm in 24 h';
     final temperature = data.environment?.waterTemperatureC;
-    final temperatureSource = EnvironmentService()
-        .configFor(data.station)
-        .waterTemperatureLabel;
+    final temperatureConfig = EnvironmentService().configFor(data.station);
+    final temperatureSource = temperature == null
+        ? temperatureConfig.waterTemperatureUnavailableLabel
+        : temperatureConfig.waterTemperatureLabel;
     return SafeArea(
       top: false,
       child: Container(
@@ -1483,13 +1484,6 @@ const _moreSources = <_MoreSource>[
     stations: 'Romanshorn · Station Güttingen',
     licence: 'CC BY 4.0 · Quelle: MeteoSwiss',
     url: 'https://www.meteoswiss.admin.ch/services-and-publications/service/open-data.html',
-  ),
-  _MoreSource(
-    name: 'Bayerisches Landesamt für Umwelt',
-    data: 'Messstation Lindau – Wassertemperatur für Konstanz und Romanshorn',
-    stations: 'Lindau · Messstation 20001001',
-    licence: 'Datenquelle: Bayerisches Landesamt für Umwelt, www.lfu.bayern.de',
-    url: 'https://www.gkd.bayern.de/de/seen/wassertemperatur/bayern/lindau-20001001/messwerte',
   ),
   _MoreSource(
     name: 'OpenStreetMap',
@@ -3368,7 +3362,7 @@ class _EnvironmentInfoCard extends StatelessWidget {
               title: 'WASSERTEMP.',
               value: _temperature(data?.waterTemperatureC),
               detail: data?.waterTemperatureC == null
-                  ? 'nicht verfügbar'
+                  ? config.waterTemperatureUnavailableLabel ?? 'nicht verfügbar'
                   : config.waterTemperatureLabel ?? '',
               accent: const Color(0xFF11B6C7),
             ),

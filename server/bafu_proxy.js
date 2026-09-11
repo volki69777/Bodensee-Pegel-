@@ -27,8 +27,6 @@ const dwdKonstanzWindUrl =
   'https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/wind/now/10minutenwerte_wind_02712_now.zip';
 const meteoSwissGuettingenUrl =
   'https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/gut/ogd-smn_gut_t_now.csv';
-const lindauWaterTemperatureUrl =
-  'https://www.gkd.bayern.de/de/seen/wassertemperatur/bayern/lindau-20001001/messwerte';
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -115,43 +113,6 @@ async function fetchDwdRecord(sourceUrl) {
   return lastCsvRecord(unzipSingleText(Buffer.from(await sourceResponse.arrayBuffer())));
 }
 
-function lindauWaterTemperatureRecord(html) {
-  const table = html.match(/<table[^>]*class=["'][^"']*tblsort[^"']*["'][^>]*>([\s\S]*?)<\/table>/i)?.[1];
-  const row = table?.match(
-    /<tr[^>]*>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>\s*<td[^>]*>\s*([\d,.]+)\s*<\/td>\s*<\/tr>/i,
-  );
-  if (!row) throw new Error('LfU Bayern response has no current Lindau temperature.');
-  const [, germanTimestamp, germanValue] = row;
-  const timestamp = germanTimestamp.match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})\s+Uhr/);
-  if (!timestamp) throw new Error('LfU Bayern response has an invalid Lindau timestamp.');
-  const [, day, month, year, hour, minute] = timestamp;
-  const value = Number(germanValue.replace(',', '.'));
-  if (!Number.isFinite(value)) throw new Error('LfU Bayern response has an invalid Lindau temperature.');
-  // GKD Bayern publishes the table in German local time (Europe/Berlin).
-  return {
-    waterTemperatureC: value,
-    waterTemperatureTimestamp: `${year}-${month}-${day}T${hour}:${minute}:00`,
-  };
-}
-
-async function fetchLindauWaterTemperature() {
-  const sourceResponse = await fetch(lindauWaterTemperatureUrl, {
-    headers: { Accept: 'text/html, */*' },
-    signal: AbortSignal.timeout(12000),
-  });
-  if (!sourceResponse.ok) throw new Error(`LfU Bayern responded with HTTP ${sourceResponse.status}.`);
-  return lindauWaterTemperatureRecord(await sourceResponse.text());
-}
-
-async function fetchOptionalLindauWaterTemperature() {
-  try {
-    return await fetchLindauWaterTemperature();
-  } catch (error) {
-    console.error('LfU Bayern Lindau water temperature unavailable:', error);
-    return { waterTemperatureC: null, waterTemperatureTimestamp: null };
-  }
-}
-
 async function fetchVorarlbergStationData() {
   const sourceResponse = await fetch(vorarlbergSourceUrl, {
     headers: { Accept: 'application/json' },
@@ -207,15 +168,15 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.url === konstanzEnvironmentRoute) {
-      const [temperature, wind, waterTemperature] = await Promise.all([
+      const [temperature, wind] = await Promise.all([
         fetchDwdRecord(dwdKonstanzTemperatureUrl),
         fetchDwdRecord(dwdKonstanzWindUrl),
-        fetchOptionalLindauWaterTemperature(),
       ]);
       sendJson(response, 200, {
         source: 'DWD',
         station: '02712',
-        ...waterTemperature,
+        waterTemperatureC: null,
+        waterTemperatureTimestamp: null,
         airTemperatureC: numberOrNull(temperature.TT_10),
         windSpeedMetersPerSecond: numberOrNull(wind.FF_10),
         windDirectionDegrees: numberOrNull(wind.DD_10),
@@ -224,15 +185,13 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.url === romanshornEnvironmentRoute) {
-      const [csv, waterTemperature] = await Promise.all([
-        fetchText(meteoSwissGuettingenUrl),
-        fetchOptionalLindauWaterTemperature(),
-      ]);
+      const csv = await fetchText(meteoSwissGuettingenUrl);
       const record = lastCsvRecord(csv);
       sendJson(response, 200, {
         source: 'MeteoSwiss',
         station: 'GUT',
-        ...waterTemperature,
+        waterTemperatureC: null,
+        waterTemperatureTimestamp: null,
         airTemperatureC: numberOrNull(record.tre200s0),
         windSpeedMetersPerSecond: numberOrNull(record.fkl010z0),
         windDirectionDegrees: numberOrNull(record.dkl010z0),
