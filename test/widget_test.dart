@@ -8,6 +8,7 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
 import 'package:bodensee_pegel/main.dart';
+import 'package:bodensee_pegel/bafu_hydro_service.dart';
 import 'package:bodensee_pegel/favorites_service.dart';
 import 'package:bodensee_pegel/station_data_cache.dart';
 import 'package:bodensee_pegel/station_selection_service.dart';
@@ -32,6 +33,62 @@ void main() {
 
     expect(find.text('Bodensee Pegel+'), findsOneWidget);
     expect(find.byType(DashboardPage), findsOneWidget);
+  });
+
+  testWidgets('opens and closes the Romanshorn forecast detail view', (
+    WidgetTester tester,
+  ) async {
+    final forecast = BafuForecastData(
+      points: List.generate(
+        3,
+        (index) => BafuForecastPoint(
+          timestamp: DateTime.utc(2026, 9, 12, 7).add(Duration(days: index)),
+          medianMasl: 394.86 - index * .02,
+          minimumMasl: 394.84 - index * .02,
+          maximumMasl: 394.88 - index * .02,
+        ),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ForecastCard(
+            station: BafuHydroService.romanshorn,
+            forecast: forecast,
+            waiting: false,
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('forecast-detail-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ForecastDetailPage), findsOneWidget);
+    expect(find.text('PROGNOSE · ROMANSHORN'), findsOneWidget);
+    expect(find.text('Quelle: BAFU'), findsOneWidget);
+    expect(find.textContaining('Start '), findsOneWidget);
+    expect(
+      find.text(
+        'Der hellblaue Bereich zeigt die Unsicherheit der BAFU-Prognose.',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tapAt(const Offset(180, 250));
+    await tester.pump();
+    expect(find.textContaining('Median:'), findsOneWidget);
+    expect(find.textContaining('Untergrenze:'), findsOneWidget);
+    expect(find.textContaining('Obergrenze:'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('forecast-detail-close')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ForecastDetailPage), findsNothing);
+    expect(
+      find.byKey(const ValueKey('forecast-detail-button')),
+      findsOneWidget,
+    );
   });
 
   test(
@@ -314,13 +371,13 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('nav-analysis')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('ROMANSHORN').last);
-    await tester.pumpAndSettle();
-    final yearTab = find.widgetWithText(ChoiceChip, '1 Jahr');
-    expect(yearTab, findsOneWidget);
-    await tester.ensureVisible(yearTab);
-    await tester.tap(yearTab);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('ROMANSHORN').last);
+      await tester.pumpAndSettle();
+      final yearTab = find.widgetWithText(ChoiceChip, '1 Jahr');
+      expect(yearTab, findsOneWidget);
+      await tester.ensureVisible(yearTab);
+      await tester.tap(yearTab);
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));

@@ -157,7 +157,11 @@ class InsightService {
         trend == InsightTrend.lightFall || trend == InsightTrend.strongFall
         ? 'gefallen'
         : 'gestiegen';
-    return 'Der Pegel ist in den letzten $period um ${_cm(changeCm.abs())} cm $direction.';
+    final intensity =
+        trend == InsightTrend.lightRise || trend == InsightTrend.lightFall
+        ? 'leicht'
+        : 'deutlich';
+    return 'Der Pegel ist in den letzten $period $intensity $direction.';
   }
 
   String _cm(double value) {

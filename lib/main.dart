@@ -477,7 +477,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 const SizedBox(height: 24),
                 FutureBuilder<StationLiveData>(
                   future: _liveData,
-                  builder: (context, snapshot) => _ForecastCard(
+                  builder: (context, snapshot) => ForecastCard(
                     station: _selectedStation,
                     forecast: snapshot.hasData && !snapshot.hasError
                         ? snapshot.data!.forecast
@@ -2340,7 +2340,10 @@ class _AnnualChartPainter extends CustomPainter {
     final grid = Paint()
       ..color = const Color(0xFFE8EFF8)
       ..strokeWidth = 1;
-    final labelPainter = TextPainter(textDirection: TextDirection.ltr);
+    final labelPainter = TextPainter(
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    );
     for (var value = minY; value <= maxY + step / 100; value += step) {
       final y = chart.bottom - chart.height * (value - minY) / (maxY - minY);
       canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), grid);
@@ -3489,8 +3492,9 @@ class _UnavailableInfoCard extends StatelessWidget {
   );
 }
 
-class _ForecastCard extends StatelessWidget {
-  const _ForecastCard({
+class ForecastCard extends StatelessWidget {
+  const ForecastCard({
+    super.key,
     required this.station,
     required this.forecast,
     required this.waiting,
@@ -3571,32 +3575,43 @@ class _ForecastCard extends StatelessWidget {
             style: TextStyle(color: Color(0xFF8B98AC), fontSize: 12),
           ),
           const SizedBox(height: 12),
-          Container(
-            width: double.infinity,
-            height: 48,
-            decoration: BoxDecoration(
-              color: const Color(0xFFEAF3FF),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              key: const ValueKey('forecast-detail-button'),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => ForecastDetailPage(forecast: data),
+                ),
+              ),
               borderRadius: BorderRadius.circular(11),
-            ),
-            alignment: Alignment.center,
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Diagramm ansehen',
-                  style: TextStyle(
-                    color: AppColors.blue,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
+              child: Ink(
+                width: double.infinity,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEAF3FF),
+                  borderRadius: BorderRadius.circular(11),
                 ),
-                SizedBox(width: 8),
-                Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppColors.blue,
-                  size: 25,
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      'Diagramm ansehen',
+                      style: TextStyle(
+                        color: AppColors.blue,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(width: 8),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppColors.blue,
+                      size: 25,
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ],
@@ -3699,6 +3714,504 @@ class _NextForecastValue extends StatelessWidget {
       ],
     );
   }
+}
+
+class ForecastDetailPage extends StatefulWidget {
+  const ForecastDetailPage({super.key, required this.forecast});
+
+  final BafuForecastData forecast;
+
+  @override
+  State<ForecastDetailPage> createState() => _ForecastDetailPageState();
+}
+
+class _ForecastDetailPageState extends State<ForecastDetailPage> {
+  BafuForecastPoint? _selectedPoint;
+
+  void _selectPoint(Offset position, double width) {
+    const left = 46.0;
+    const right = 12.0;
+    final chartWidth = width - left - right;
+    if (chartWidth <= 0) return;
+    final fraction = ((position.dx - left) / chartWidth).clamp(0.0, 1.0);
+    final first = widget.forecast.points.first.timestamp;
+    final last = widget.forecast.points.last.timestamp;
+    final target = first.add(
+      Duration(
+        milliseconds: (last.difference(first).inMilliseconds * fraction)
+            .round(),
+      ),
+    );
+    final point = widget.forecast.points.reduce(
+      (closest, candidate) =>
+          candidate.timestamp.difference(target).abs() <
+              closest.timestamp.difference(target).abs()
+          ? candidate
+          : closest,
+    );
+    setState(() => _selectedPoint = point);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chartHeight = math
+        .max(390.0, MediaQuery.sizeOf(context).height * .5)
+        .toDouble();
+    return Scaffold(
+      backgroundColor: const Color(0xFFF3F7FC),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 14, 20, 12),
+              child: Row(
+                children: [
+                  IconButton(
+                    key: const ValueKey('forecast-detail-close'),
+                    tooltip: 'Zurück',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      color: AppColors.navy,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Expanded(
+                    child: Text(
+                      'PROGNOSE · ROMANSHORN',
+                      style: TextStyle(
+                        color: AppColors.navy,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 30),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 18),
+                  decoration: _cardDecoration(radius: 26),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.show_chart_rounded, color: AppColors.blue),
+                          SizedBox(width: 9),
+                          Text(
+                            'BAFU-PROGNOSE',
+                            style: TextStyle(
+                              color: AppColors.deepBlue,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Auf die Kurve tippen für Zeitpunkt und Prognosebereich.',
+                        style: TextStyle(
+                          color: Color(0xFF71809A),
+                          fontSize: 11,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      LayoutBuilder(
+                        builder: (context, constraints) => SizedBox(
+                          height: chartHeight,
+                          width: double.infinity,
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTapDown: (details) => _selectPoint(
+                              details.localPosition,
+                              constraints.maxWidth,
+                            ),
+                            onPanDown: (details) => _selectPoint(
+                              details.localPosition,
+                              constraints.maxWidth,
+                            ),
+                            onPanUpdate: (details) => _selectPoint(
+                              details.localPosition,
+                              constraints.maxWidth,
+                            ),
+                            child: MouseRegion(
+                              cursor: SystemMouseCursors.precise,
+                              onHover: (event) => _selectPoint(
+                                event.localPosition,
+                                constraints.maxWidth,
+                              ),
+                              child: Stack(
+                                children: [
+                                  Positioned.fill(
+                                    child: CustomPaint(
+                                      painter: _ForecastDetailChartPainter(
+                                        widget.forecast.points,
+                                        BafuHydroService
+                                            .romanshornReferenceMasl,
+                                        _selectedPoint,
+                                      ),
+                                    ),
+                                  ),
+                                  if (_selectedPoint != null)
+                                    Positioned(
+                                      top: 8,
+                                      right: 4,
+                                      child: _ForecastDetailTooltip(
+                                        point: _selectedPoint!,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _ForecastDetailSummary(points: widget.forecast.points),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'Quelle: BAFU',
+                        style: TextStyle(
+                          color: Color(0xFF8B98AC),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ForecastDetailSummary extends StatelessWidget {
+  const _ForecastDetailSummary({required this.points});
+
+  final List<BafuForecastPoint> points;
+
+  static const _referenceMasl = BafuHydroService.romanshornReferenceMasl;
+
+  @override
+  Widget build(BuildContext context) {
+    final start = (points.first.medianMasl - _referenceMasl) * 100;
+    final end = (points.last.medianMasl - _referenceMasl) * 100;
+    final change = end - start;
+    final trend = change > .5
+        ? 'Langsam steigend'
+        : change < -.5
+        ? 'Langsam fallend'
+        : 'Etwa gleich';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F9FF),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Start ${_cm(start)} → Ende ${_cm(end)}',
+            style: const TextStyle(
+              color: AppColors.navy,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${change >= 0 ? '+' : '−'}${_cm(change.abs())} · $trend',
+            style: const TextStyle(
+              color: AppColors.blue,
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Der hellblaue Bereich zeigt die Unsicherheit der BAFU-Prognose.',
+            style: TextStyle(color: Color(0xFF71809A), fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _cm(double value) {
+    final digits = value == value.roundToDouble() ? 0 : 1;
+    return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
+  }
+}
+
+class _ForecastDetailTooltip extends StatelessWidget {
+  const _ForecastDetailTooltip({required this.point});
+
+  final BafuForecastPoint point;
+
+  static const _referenceMasl = BafuHydroService.romanshornReferenceMasl;
+
+  @override
+  Widget build(BuildContext context) {
+    final local = point.timestamp.toLocal();
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 180),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .96),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x16092E60),
+            blurRadius: 12,
+            offset: Offset(0, 5),
+          ),
+        ],
+      ),
+      child: DefaultTextStyle(
+        style: const TextStyle(
+          color: AppColors.navy,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')}.${local.year} · '
+              '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}',
+            ),
+            const SizedBox(height: 3),
+            Text('Median: ${_cm(point.medianMasl)}'),
+            Text('Untergrenze: ${_cm(point.minimumMasl)}'),
+            Text('Obergrenze: ${_cm(point.maximumMasl)}'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _cm(double valueMasl) {
+    final cm = (valueMasl - _referenceMasl) * 100;
+    final digits = cm == cm.roundToDouble() ? 0 : 1;
+    return '${cm.toStringAsFixed(digits).replaceAll('.', ',')} cm';
+  }
+}
+
+class _ForecastDetailChartPainter extends CustomPainter {
+  const _ForecastDetailChartPainter(
+    this.points,
+    this.referenceMasl,
+    this.selected,
+  );
+
+  final List<BafuForecastPoint> points;
+  final double referenceMasl;
+  final BafuForecastPoint? selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+    const left = 46.0;
+    const right = 12.0;
+    const top = 16.0;
+    const bottom = 46.0;
+    final chart = Rect.fromLTWH(
+      left,
+      top,
+      size.width - left - right,
+      size.height - top - bottom,
+    );
+    final sourceValues = <double>[
+      ...points.map((point) => (point.minimumMasl - referenceMasl) * 100),
+      ...points.map((point) => (point.maximumMasl - referenceMasl) * 100),
+    ];
+    final rawMin = sourceValues.reduce(math.min);
+    final rawMax = sourceValues.reduce(math.max);
+    final margin = math.max(1, (rawMax - rawMin) * .12).toDouble();
+    final step = _niceStep((rawMax - rawMin + margin * 2) / 5);
+    final minY = ((rawMin - margin) / step).floor() * step;
+    final maxY = ((rawMax + margin) / step).ceil() * step;
+    final first = points.first.timestamp;
+    final duration = math.max(
+      1,
+      points.last.timestamp.difference(first).inMilliseconds,
+    );
+
+    Offset position(BafuForecastPoint point, double valueCm) {
+      final elapsed = point.timestamp.difference(first).inMilliseconds;
+      return Offset(
+        chart.left + chart.width * elapsed / duration,
+        chart.bottom - chart.height * (valueCm - minY) / (maxY - minY),
+      );
+    }
+
+    final gridPaint = Paint()
+      ..color = const Color(0xFFE2EAF5)
+      ..strokeWidth = 1;
+    final labelPainter = TextPainter(textDirection: TextDirection.ltr);
+    for (var value = minY; value <= maxY + step / 100; value += step) {
+      final y = chart.bottom - chart.height * (value - minY) / (maxY - minY);
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), gridPaint);
+      labelPainter.text = TextSpan(
+        text: _axis(value),
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 10),
+      );
+      labelPainter.layout();
+      labelPainter.paint(
+        canvas,
+        Offset(
+          chart.left - labelPainter.width - 7,
+          y - labelPainter.height / 2,
+        ),
+      );
+    }
+
+    final upper = points
+        .map(
+          (point) => position(point, (point.maximumMasl - referenceMasl) * 100),
+        )
+        .toList();
+    final lower = points
+        .map(
+          (point) => position(point, (point.minimumMasl - referenceMasl) * 100),
+        )
+        .toList();
+    final band = Path()..moveTo(upper.first.dx, upper.first.dy);
+    for (final point in upper.skip(1)) {
+      band.lineTo(point.dx, point.dy);
+    }
+    for (final point in lower.reversed) {
+      band.lineTo(point.dx, point.dy);
+    }
+    band.close();
+    canvas.drawPath(
+      band,
+      Paint()..color = AppColors.blue.withValues(alpha: .10),
+    );
+
+    final median = Path();
+    for (var index = 0; index < points.length; index++) {
+      final point = position(
+        points[index],
+        (points[index].medianMasl - referenceMasl) * 100,
+      );
+      if (index == 0) {
+        median.moveTo(point.dx, point.dy);
+      } else {
+        median.lineTo(point.dx, point.dy);
+      }
+    }
+    canvas.drawPath(
+      median,
+      Paint()
+        ..color = AppColors.deepBlue
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.8
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    if (selected != null) {
+      final selectedPosition = position(
+        selected!,
+        (selected!.medianMasl - referenceMasl) * 100,
+      );
+      canvas.drawLine(
+        Offset(selectedPosition.dx, chart.top),
+        Offset(selectedPosition.dx, chart.bottom),
+        Paint()
+          ..color = AppColors.blue.withValues(alpha: .45)
+          ..strokeWidth = 1,
+      );
+      canvas.drawCircle(selectedPosition, 4.5, Paint()..color = Colors.white);
+      canvas.drawCircle(
+        selectedPosition,
+        3.2,
+        Paint()..color = AppColors.deepBlue,
+      );
+    }
+
+    final hours = duration / Duration.millisecondsPerHour;
+    final ticks = <double>[
+      0,
+      24,
+      48,
+      72,
+      96,
+    ].where((hour) => hour < hours).toList();
+    if (hours > 0) ticks.add(hours);
+    for (final hour in ticks) {
+      final x = chart.left + chart.width * hour / hours;
+      final label = _timeLabel(first, hour, isStart: hour == 0);
+      labelPainter.text = TextSpan(
+        text: label,
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 9),
+      );
+      labelPainter.layout();
+      labelPainter.paint(
+        canvas,
+        Offset(
+          (x - labelPainter.width / 2)
+              .clamp(chart.left, chart.right - labelPainter.width)
+              .toDouble(),
+          chart.bottom + 9,
+        ),
+      );
+    }
+  }
+
+  String _axis(double value) => value == value.roundToDouble()
+      ? value.round().toString()
+      : value.toStringAsFixed(1).replaceAll('.', ',');
+
+  String _timeLabel(DateTime first, double hour, {required bool isStart}) {
+    if (isStart) return 'Jetzt';
+    final timestamp = first
+        .add(
+          Duration(milliseconds: (hour * Duration.millisecondsPerHour).round()),
+        )
+        .toLocal();
+    const weekdays = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+    return '${weekdays[timestamp.weekday - 1]}\n${timestamp.day.toString().padLeft(2, '0')}.${timestamp.month.toString().padLeft(2, '0')}';
+  }
+
+  double _niceStep(double value) {
+    final exponent = math
+        .pow(10, (math.log(value) / math.ln10).floor())
+        .toDouble();
+    final candidates = <double>[
+      exponent / 10,
+      exponent / 5,
+      exponent / 4,
+      exponent / 2,
+      exponent,
+      exponent * 2,
+      exponent * 2.5,
+      exponent * 5,
+      exponent * 10,
+    ];
+    return candidates.reduce(
+      (best, candidate) =>
+          (candidate - value).abs() < (best - value).abs() ? candidate : best,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ForecastDetailChartPainter oldDelegate) =>
+      oldDelegate.points != points || oldDelegate.selected != selected;
 }
 
 class _ForecastChartPainter extends CustomPainter {
@@ -3889,65 +4402,73 @@ class _EnvironmentInfoCard extends StatelessWidget {
   final StationEnvironmentData? data;
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
-    decoration: _cardDecoration(),
-    child: IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: _EnvironmentSection(
-              icon: Icons.water_drop_outlined,
-              title: 'WASSERTEMP.',
-              value: _temperature(data?.waterTemperatureC),
-              detail: data?.waterTemperatureC == null
-                  ? config.waterTemperatureUnavailableLabel ?? 'nicht verfügbar'
-                  : config.waterTemperatureLabel ?? '',
-              accent: const Color(0xFF11B6C7),
+  Widget build(BuildContext context) {
+    final noLocalWaterTemperature =
+        data?.waterTemperatureC == null &&
+        config.waterTemperatureUnavailableLabel != null;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
+      decoration: _cardDecoration(),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: _EnvironmentSection(
+                icon: Icons.water_drop_outlined,
+                title: 'WASSERTEMP.',
+                value: noLocalWaterTemperature
+                    ? 'Nicht verfügbar'
+                    : _temperature(data?.waterTemperatureC),
+                detail: noLocalWaterTemperature
+                    ? 'Keine lokale Messung'
+                    : config.waterTemperatureLabel ?? '',
+                accent: const Color(0xFF11B6C7),
+                valueFontSize: noLocalWaterTemperature ? 12 : 16,
+              ),
             ),
-          ),
-          const VerticalDivider(
-            width: 1,
-            thickness: 1,
-            color: Color(0xFFE1E9F4),
-          ),
-          Expanded(
-            child: _EnvironmentSection(
-              icon: Icons.air_rounded,
-              title: 'WIND',
-              value: _windValue(data),
-              detail: data?.windSpeedMetersPerSecond == null
-                  ? 'nicht verfügbar'
-                  : _windDetail(
-                      data?.windDirectionDegrees,
-                      config.windSourceLabel,
-                    ),
-              accent: AppColors.blue,
-              directionDegrees: data?.windDirectionDegrees,
+            const VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: Color(0xFFE1E9F4),
             ),
-          ),
-          const VerticalDivider(
-            width: 1,
-            thickness: 1,
-            color: Color(0xFFE1E9F4),
-          ),
-          Expanded(
-            child: _EnvironmentSection(
-              icon: Icons.thermostat_rounded,
-              title: 'LUFT',
-              value: _temperature(data?.airTemperatureC),
-              detail: data?.airTemperatureC == null
-                  ? 'nicht verfügbar'
-                  : config.airSourceLabel,
-              accent: const Color(0xFFFFA91B),
+            Expanded(
+              child: _EnvironmentSection(
+                icon: Icons.air_rounded,
+                title: 'WIND',
+                value: _windValue(data),
+                detail: data?.windSpeedMetersPerSecond == null
+                    ? 'nicht verfügbar'
+                    : _windDetail(
+                        data?.windDirectionDegrees,
+                        config.windSourceLabel,
+                      ),
+                accent: AppColors.blue,
+                directionDegrees: data?.windDirectionDegrees,
+              ),
             ),
-          ),
-        ],
+            const VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: Color(0xFFE1E9F4),
+            ),
+            Expanded(
+              child: _EnvironmentSection(
+                icon: Icons.thermostat_rounded,
+                title: 'LUFT',
+                value: _temperature(data?.airTemperatureC),
+                detail: data?.airTemperatureC == null
+                    ? 'nicht verfügbar'
+                    : config.airSourceLabel,
+                accent: const Color(0xFFFFA91B),
+              ),
+            ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   String _temperature(double? value) => value == null
       ? '–'
@@ -3976,6 +4497,7 @@ class _EnvironmentSection extends StatelessWidget {
     required this.detail,
     required this.accent,
     this.directionDegrees,
+    this.valueFontSize = 16,
   });
 
   final IconData icon;
@@ -3984,6 +4506,7 @@ class _EnvironmentSection extends StatelessWidget {
   final String detail;
   final Color accent;
   final double? directionDegrees;
+  final double valueFontSize;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -4021,8 +4544,10 @@ class _EnvironmentSection extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: value == '–' ? const Color(0xFF8B98AC) : accent,
-                  fontSize: 16,
+                  color: value == '–' || value == 'Nicht verfügbar'
+                      ? const Color(0xFF71809A)
+                      : accent,
+                  fontSize: valueFontSize,
                   fontWeight: FontWeight.w800,
                 ),
               ),
@@ -4270,6 +4795,22 @@ class _HistorySparklinePainter extends CustomPainter {
     final horizontalPadding = 3.0;
     final verticalPadding = 8.0;
     final drawableHeight = size.height - 2 * verticalPadding;
+    // A three-point weighted average smooths only the drawn line. Endpoints,
+    // source timestamps and the raw range stay untouched; the convex weights
+    // also prevent visual overshoots beyond neighbouring measurements.
+    final renderedValues = <double>[];
+    for (var index = 0; index < history.length; index++) {
+      if (index == 0 || index == history.length - 1) {
+        renderedValues.add(history[index].value);
+      } else {
+        renderedValues.add(
+          (history[index - 1].value +
+                  history[index].value * 2 +
+                  history[index + 1].value) /
+              4,
+        );
+      }
+    }
     final points = <Offset>[];
 
     final firstTimestamp = history.first.timestamp;
@@ -4286,29 +4827,14 @@ class _HistorySparklinePainter extends CustomPainter {
           horizontalPadding +
           (size.width - 2 * horizontalPadding) *
               relativePosition.clamp(0.0, 1.0).toDouble();
-      final normalizedValue = (history[index].value - displayMin) / valueRange;
+      final normalizedValue = (renderedValues[index] - displayMin) / valueRange;
       final y = verticalPadding + drawableHeight * (1 - normalizedValue);
       points.add(Offset(x, y));
     }
     final path = Path()..moveTo(points.first.dx, points.first.dy);
-    for (var index = 1; index < points.length - 1; index++) {
-      final midpoint = Offset(
-        (points[index].dx + points[index + 1].dx) / 2,
-        (points[index].dy + points[index + 1].dy) / 2,
-      );
-      path.quadraticBezierTo(
-        points[index].dx,
-        points[index].dy,
-        midpoint.dx,
-        midpoint.dy,
-      );
+    for (var index = 1; index < points.length; index++) {
+      path.lineTo(points[index].dx, points[index].dy);
     }
-    path.quadraticBezierTo(
-      points.last.dx,
-      points.last.dy,
-      points.last.dx,
-      points.last.dy,
-    );
     final fillPath = Path.from(path)
       ..lineTo(size.width - horizontalPadding, size.height)
       ..lineTo(horizontalPadding, size.height)

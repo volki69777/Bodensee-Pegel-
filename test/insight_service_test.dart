@@ -19,6 +19,18 @@ void main() {
     test('four centimetres is a strong rise', () {
       expect(InsightService.trend24Hours(4), InsightTrend.strongRise);
     });
+    test('a light fall uses the concise neutral text', () {
+      expect(
+        service.fromKonstanz(change24HoursCm: -2)?.text,
+        'Der Pegel ist in den letzten 24 Stunden leicht gefallen.',
+      );
+    });
+    test('a strong rise uses the concise neutral text', () {
+      expect(
+        service.fromKonstanz(change24HoursCm: 4)?.text,
+        'Der Pegel ist in den letzten 24 Stunden deutlich gestiegen.',
+      );
+    });
   });
 
   group('7-day trend boundaries', () {
