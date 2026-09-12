@@ -10,6 +10,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:bodensee_pegel/main.dart';
 import 'package:bodensee_pegel/favorites_service.dart';
 import 'package:bodensee_pegel/station_data_cache.dart';
+import 'package:bodensee_pegel/station_selection_service.dart';
 
 void main() {
   setUp(() {
@@ -75,6 +76,26 @@ void main() {
     cache.invalidate('konstanz');
     expect(await cache.get('konstanz', () async => ++requests), 2);
   });
+
+  test(
+    'restores the last station before the configured start station',
+    () async {
+      final preferences = SharedPreferencesAsync();
+      await preferences.setString(
+        StationSelectionService.startStationPreferenceKey,
+        'aa9179c1-17ef-4c61-a48a-74193fa7bfdf',
+      );
+      await preferences.setString(
+        StationSelectionService.lastSelectedStationPreferenceKey,
+        'bafu-2032',
+      );
+
+      final selection = StationSelectionService(preferences: preferences);
+      await selection.restoreInitialStation();
+
+      expect(selection.currentStation.uuid, 'bafu-2032');
+    },
+  );
 
   testWidgets('shows and clears the favorites empty state with the star', (
     WidgetTester tester,
@@ -199,6 +220,180 @@ void main() {
     await tester.tap(find.text('Karte'));
     await tester.pumpAndSettle();
     expect(find.byType(MapPage), findsOneWidget);
+  });
+
+  testWidgets('keeps the live station while navigating to analysis and back', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('live-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-analysis')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AnalysisPage), findsOneWidget);
+    expect(find.text('ROMANSHORN'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('nav-live')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DashboardPage), findsOneWidget);
+    expect(find.text('ROMANSHORN'), findsWidgets);
+  });
+
+  testWidgets('uses an analysis station as the live station', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-analysis')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('BREGENZ').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-live')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DashboardPage), findsOneWidget);
+    expect(find.text('BREGENZ'), findsWidgets);
+  });
+
+  testWidgets('keeps an available analysis period when changing stations', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-analysis')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, '30 Tage'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, '30 Tage'))
+          .selected,
+      isTrue,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('BREGENZ').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, '30 Tage'))
+          .selected,
+      isTrue,
+    );
+  });
+
+  testWidgets(
+    'keeps the annual analysis range between Romanshorn and Bregenz',
+    (WidgetTester tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 1000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(const BodenseePegelApp());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('nav-analysis')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+    final yearTab = find.widgetWithText(ChoiceChip, '1 Jahr');
+    expect(yearTab, findsOneWidget);
+    await tester.ensureVisible(yearTab);
+    await tester.tap(yearTab);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('BREGENZ').last);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, '1 Jahr'))
+            .selected,
+        isTrue,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('KONSTANZ').last);
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ChoiceChip, '1 Jahr'), findsNothing);
+      expect(
+        tester
+            .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, '24 h'))
+            .selected,
+        isTrue,
+      );
+    },
+  );
+
+  testWidgets('keeps a map-opened station across live and analysis', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-map')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('map-marker-bafu-2032')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Station öffnen'));
+    await tester.pumpAndSettle();
+    expect(find.text('ROMANSHORN'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('nav-analysis')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AnalysisPage), findsOneWidget);
+    expect(find.text('ROMANSHORN'), findsOneWidget);
+  });
+
+  testWidgets('navigation alone never resets the selected station', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('live-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+
+    for (final key in const [
+      ValueKey('nav-analysis'),
+      ValueKey('nav-map'),
+      ValueKey('nav-more'),
+      ValueKey('nav-live'),
+    ]) {
+      await tester.tap(find.byKey(key));
+      await tester.pumpAndSettle();
+    }
+    expect(find.byType(DashboardPage), findsOneWidget);
+    expect(find.text('ROMANSHORN'), findsWidgets);
   });
 
   testWidgets('opens Mehr and persists its configured start station', (

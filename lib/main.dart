@@ -15,6 +15,7 @@ import 'insight_service.dart';
 import 'map_configuration.dart';
 import 'pegelonline_service.dart';
 import 'station_data_cache.dart';
+import 'station_selection_service.dart';
 import 'vorarlberg_hydro_service.dart';
 
 void main() => runApp(const BodenseePegelApp());
@@ -77,21 +78,55 @@ class StationLiveData {
   }
 }
 
-class BodenseePegelApp extends StatelessWidget {
+class BodenseePegelApp extends StatefulWidget {
   const BodenseePegelApp({super.key});
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Bodensee Pegel+',
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(seedColor: AppColors.blue),
-      scaffoldBackgroundColor: AppColors.mist,
-      textTheme: ThemeData.light().textTheme.apply(fontFamily: 'Roboto'),
+  State<BodenseePegelApp> createState() => _BodenseePegelAppState();
+}
+
+class _BodenseePegelAppState extends State<BodenseePegelApp> {
+  final _stationSelection = StationSelectionService();
+
+  @override
+  void initState() {
+    super.initState();
+    _stationSelection.restoreInitialStation();
+  }
+
+  @override
+  void dispose() {
+    _stationSelection.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => StationSelectionScope(
+    notifier: _stationSelection,
+    child: MaterialApp(
+      title: 'Bodensee Pegel+',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.blue),
+        scaffoldBackgroundColor: AppColors.mist,
+        textTheme: ThemeData.light().textTheme.apply(fontFamily: 'Roboto'),
+      ),
+      home: const DashboardPage(),
     ),
-    home: const DashboardPage(),
   );
+}
+
+class StationSelectionScope extends InheritedNotifier<StationSelectionService> {
+  const StationSelectionScope({
+    super.key,
+    required StationSelectionService notifier,
+    required super.child,
+  }) : super(notifier: notifier);
+
+  static StationSelectionService? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<StationSelectionScope>()
+      ?.notifier;
 }
 
 enum AppDestination { live, analysis, map, more }
@@ -101,6 +136,9 @@ void _navigateTo(
   AppDestination destination, {
   PegelStation? initialStation,
 }) {
+  if (initialStation != null) {
+    StationSelectionScope.maybeOf(context)?.select(initialStation);
+  }
   Navigator.of(context).pushAndRemoveUntil(
     MaterialPageRoute<void>(
       builder: (_) => DashboardPage(
@@ -127,19 +165,10 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  static const _lastSelectedStationPreferenceKey = 'selected_station_uuid';
-  static const _startStationPreferenceKey = 'start_station_uuid';
-  static const _availableStations = <PegelStation>[
-    PegelOnlineService.konstanz,
-    BafuHydroService.romanshorn,
-    VorarlbergHydroService.bregenz,
-  ];
-
   final _pegelOnlineService = PegelOnlineService();
   final _bafuService = BafuHydroService();
   final _vorarlbergService = VorarlbergHydroService();
   final _environmentService = EnvironmentService();
-  final _preferences = SharedPreferencesAsync();
   final _favoritesService = FavoritesService();
   final _analysisService = AnalysisService();
   final _insightService = InsightService();
@@ -151,17 +180,17 @@ class _DashboardPageState extends State<DashboardPage> {
   late Future<List<String>> _favoriteUuids;
   late Future<BodenseeInsight?> _insight;
   PegelStation _selectedStation = PegelOnlineService.konstanz;
+  StationSelectionService? _stationSelection;
 
   @override
   void initState() {
     super.initState();
     _selectedStation = widget.initialStation ?? PegelOnlineService.konstanz;
-    _stations = Future.value(_availableStations);
+    _stations = Future.value(StationSelectionService.stations);
     _liveData = _loadCachedLiveData(_selectedStation);
     _environmentData = _loadEnvironmentData(_selectedStation);
     _insight = _loadCachedInsight(_selectedStation, _liveData);
     _favoriteUuids = _loadFavoriteUuids();
-    if (widget.initialStation == null) _restoreStartStation();
     if (widget.initialDestination != AppDestination.live) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _openInitialDestination(),
@@ -187,29 +216,26 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  Future<void> _restoreStartStation() async {
-    try {
-      final savedUuid = await _preferences.getString(
-        _startStationPreferenceKey,
-      );
-      if (savedUuid == null) return;
-      final stations = await _stations;
-      PegelStation? savedStation;
-      for (final station in stations) {
-        if (station.uuid == savedUuid) {
-          savedStation = station;
-          break;
-        }
-      }
-      if (savedStation != null && mounted) {
-        _selectStation(savedStation, persist: false);
-      }
-    } catch (_) {
-      // Local storage must never prevent the default live station from loading.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final selection = StationSelectionScope.maybeOf(context);
+    if (selection == _stationSelection) return;
+    _stationSelection?.removeListener(_syncSharedStation);
+    _stationSelection = selection;
+    selection?.addListener(_syncSharedStation);
+    if (widget.initialStation != null) {
+      selection?.select(widget.initialStation!);
     }
+    _applySelectedStation(selection?.currentStation ?? _selectedStation);
   }
 
-  void _selectStation(PegelStation station, {bool persist = true}) {
+  void _syncSharedStation() {
+    final selection = _stationSelection;
+    if (selection != null) _applySelectedStation(selection.currentStation);
+  }
+
+  void _applySelectedStation(PegelStation station) {
     if (station.uuid == _selectedStation.uuid) return;
     setState(() {
       _selectedStation = station;
@@ -217,9 +243,15 @@ class _DashboardPageState extends State<DashboardPage> {
       _environmentData = _loadEnvironmentData(station);
       _insight = _loadCachedInsight(station, _liveData);
     });
-    if (persist) {
-      _preferences.setString(_lastSelectedStationPreferenceKey, station.uuid);
+  }
+
+  void _selectStation(PegelStation station) {
+    final selection = _stationSelection;
+    if (selection != null) {
+      selection.select(station);
+      return;
     }
+    _applySelectedStation(station);
   }
 
   Future<void> _openStationSelector(List<PegelStation> stations) async {
@@ -244,6 +276,12 @@ class _DashboardPageState extends State<DashboardPage> {
     _environmentData = _loadEnvironmentData(_selectedStation);
     _insight = _loadCachedInsight(_selectedStation, _liveData);
   });
+
+  @override
+  void dispose() {
+    _stationSelection?.removeListener(_syncSharedStation);
+    super.dispose();
+  }
 
   Future<List<String>> _loadFavoriteUuids() async {
     final stations = await _stations;
@@ -479,7 +517,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   builder: (context, snapshot) => _FavoritesSection(
                     stations: (snapshot.data ?? const <String>[])
                         .map(
-                          (uuid) => _availableStations
+                          (uuid) => StationSelectionService.stations
                               .where((station) => station.uuid == uuid)
                               .firstOrNull,
                         )
@@ -1511,6 +1549,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
   PegelStation _station = PegelOnlineService.konstanz;
   late AnalysisPeriod _period;
   late Future<AnalysisSeries> _series;
+  StationSelectionService? _stationSelection;
 
   @override
   void initState() {
@@ -1519,7 +1558,40 @@ class _AnalysisPageState extends State<AnalysisPage> {
     _series = _load();
   }
 
-  Future<AnalysisSeries> _load() => _analysisService.fetch(_station, _period);
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final selection = StationSelectionScope.maybeOf(context);
+    if (selection == _stationSelection) return;
+    _stationSelection?.removeListener(_syncSharedStation);
+    _stationSelection = selection;
+    selection?.addListener(_syncSharedStation);
+    _applyStation(selection?.currentStation ?? _station);
+  }
+
+  void _syncSharedStation() {
+    final selection = _stationSelection;
+    if (selection != null) _applyStation(selection.currentStation);
+  }
+
+  void _applyStation(PegelStation station) {
+    if (station.uuid == _station.uuid) return;
+    final period = _analysisService.resolvePeriodForStation(station, _period);
+    setState(() {
+      _station = station;
+      _period = period;
+      _series = _load();
+    });
+  }
+
+  Future<AnalysisSeries> _load() {
+    final request = _analysisService.fetch(_station, _period);
+    // A station switch may replace this future before its request completes.
+    // Observe its error regardless, while the active FutureBuilder continues
+    // to render a clear unavailable-data state for the current request.
+    request.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return request;
+  }
 
   void _selectPeriod(AnalysisPeriod period) {
     if (period == _period) return;
@@ -1537,11 +1609,18 @@ class _AnalysisPageState extends State<AnalysisPage> {
           _StationSelector(stations: _stations, selectedStation: _station),
     );
     if (station == null || !mounted || station.uuid == _station.uuid) return;
-    setState(() {
-      _station = station;
-      _period = _analysisService.periodsFor(station).first;
-      _series = _load();
-    });
+    final selection = _stationSelection;
+    if (selection != null) {
+      selection.select(station);
+    } else {
+      _applyStation(station);
+    }
+  }
+
+  @override
+  void dispose() {
+    _stationSelection?.removeListener(_syncSharedStation);
+    super.dispose();
   }
 
   @override
@@ -1626,6 +1705,7 @@ class _AnalysisStationButton extends StatelessWidget {
     color: Colors.white,
     borderRadius: BorderRadius.circular(22),
     child: InkWell(
+      key: const ValueKey('analysis-station-selector'),
       onTap: onTap,
       borderRadius: BorderRadius.circular(22),
       child: Padding(
@@ -1728,6 +1808,7 @@ class _AnalysisContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final readings = series.readings;
+    final annual = series.annualComparison;
     final minimum = readings
         .map((reading) => reading.valueCm)
         .reduce((a, b) => a < b ? a : b);
@@ -1753,32 +1834,168 @@ class _AnalysisContent extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 15),
-              SizedBox(
-                height: 285,
-                child: CustomPaint(
-                  painter: _AnalysisChartPainter(readings, series.period),
-                  child: const SizedBox.expand(),
+              if (annual != null)
+                _AnnualAnalysisChart(comparison: annual)
+              else
+                SizedBox(
+                  height: 285,
+                  child: CustomPaint(
+                    painter: _AnalysisChartPainter(readings, series.period),
+                    child: const SizedBox.expand(),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
         const SizedBox(height: 18),
-        _AnalysisMetrics(
-          current: readings.last.valueCm,
-          minimum: minimum,
-          maximum: maximum,
-          change: change,
-          period: series.period,
-        ),
+        annual == null
+            ? _AnalysisMetrics(
+                current: readings.last.valueCm,
+                minimum: minimum,
+                maximum: maximum,
+                change: change,
+                period: series.period,
+              )
+            : _AnnualAnalysisMetrics(
+                summary: AnnualAnalysisSummary.from(annual),
+                referenceLabel: annual.referenceLabel,
+              ),
         const SizedBox(height: 18),
-        _ReferenceCard(
-          station: station,
-          seasonalReference: series.seasonalReference,
-        ),
+        annual == null
+            ? _ReferenceCard(
+                station: station,
+                seasonalReference: series.seasonalReference,
+              )
+            : _AnnualLegend(comparison: annual),
       ],
     );
   }
+}
+
+class _AnnualAnalysisMetrics extends StatelessWidget {
+  const _AnnualAnalysisMetrics({
+    required this.summary,
+    required this.referenceLabel,
+  });
+
+  final AnnualAnalysisSummary summary;
+  final String referenceLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final difference = summary.referenceDifferenceCm;
+    final shortReference = referenceLabel.contains('Median')
+        ? 'ZUM MEDIAN'
+        : 'ZUM MITTEL';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
+      decoration: _cardDecoration(radius: 22),
+      child: Row(
+        children: [
+          _Metric(label: 'AKTUELL', value: _cm(summary.currentCm)),
+          const VerticalDivider(
+            width: 1,
+            thickness: 1,
+            color: Color(0xFFE1E9F4),
+          ),
+          _Metric(label: 'MINIMUM', value: _cm(summary.minimumCm)),
+          const VerticalDivider(
+            width: 1,
+            thickness: 1,
+            color: Color(0xFFE1E9F4),
+          ),
+          _Metric(label: 'MAXIMUM', value: _cm(summary.maximumCm)),
+          const VerticalDivider(
+            width: 1,
+            thickness: 1,
+            color: Color(0xFFE1E9F4),
+          ),
+          _Metric(
+            label: shortReference,
+            value: difference == null
+                ? '–'
+                : '${difference >= 0 ? '+' : ''}${_cm(difference)}',
+            accent: AppColors.navy,
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _cm(double value) {
+    final digits = value == value.roundToDouble() ? 0 : 1;
+    return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
+  }
+}
+
+class _AnnualLegend extends StatelessWidget {
+  const _AnnualLegend({required this.comparison});
+
+  final AnnualComparison comparison;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+    decoration: _cardDecoration(radius: 22),
+    child: Wrap(
+      spacing: 14,
+      runSpacing: 8,
+      children: [
+        const _LegendItem(color: AppColors.blue, label: 'Aktuelles Jahr'),
+        if (comparison.previous != null)
+          const _LegendItem(color: Color(0xB39AA8BC), label: 'Vorjahr'),
+        _LegendItem(
+          color: const Color(0xFF199469),
+          label: comparison.referenceLabel,
+        ),
+        const _LegendItem(
+          color: Color(0x16278BE6),
+          label: 'Historischer Bereich',
+          filled: true,
+        ),
+      ],
+    ),
+  );
+}
+
+class _LegendItem extends StatelessWidget {
+  const _LegendItem({
+    required this.color,
+    required this.label,
+    this.filled = false,
+  });
+
+  final Color color;
+  final String label;
+  final bool filled;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(
+        width: 18,
+        height: 8,
+        decoration: BoxDecoration(
+          color: filled ? color : null,
+          borderRadius: BorderRadius.circular(4),
+          border: filled
+              ? null
+              : Border(top: BorderSide(color: color, width: 2)),
+        ),
+      ),
+      const SizedBox(width: 6),
+      Text(
+        label,
+        style: const TextStyle(
+          color: Color(0xFF64738D),
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    ],
+  );
 }
 
 class _AnalysisMetrics extends StatelessWidget {
@@ -1945,6 +2162,333 @@ class _ReferenceCard extends StatelessWidget {
   }
 }
 
+class _AnnualAnalysisChart extends StatefulWidget {
+  const _AnnualAnalysisChart({required this.comparison});
+
+  final AnnualComparison comparison;
+
+  @override
+  State<_AnnualAnalysisChart> createState() => _AnnualAnalysisChartState();
+}
+
+class _AnnualAnalysisChartState extends State<_AnnualAnalysisChart> {
+  AnalysisReading? _selected;
+
+  @override
+  void didUpdateWidget(covariant _AnnualAnalysisChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A selected day belongs to one specific station/year series. Clear the
+    // overlay as soon as the chart receives another data set.
+    if (!identical(oldWidget.comparison, widget.comparison)) {
+      _selected = null;
+    }
+  }
+
+  void _selectAt(Offset position, double width) {
+    final chartWidth = math.max(1.0, width - 50);
+    final fraction = ((position.dx - 42) / chartWidth).clamp(0.0, 1.0);
+    final year = widget.comparison.current.first.timestamp.year;
+    final start = DateTime(year);
+    final end = DateTime(year + 1).subtract(const Duration(days: 1));
+    final target = start.add(
+      Duration(
+        milliseconds: (end.difference(start).inMilliseconds * fraction).round(),
+      ),
+    );
+    final selected = widget.comparison.current.reduce(
+      (closest, candidate) =>
+          candidate.timestamp.difference(target).inMilliseconds.abs() <
+              closest.timestamp.difference(target).inMilliseconds.abs()
+          ? candidate
+          : closest,
+    );
+    setState(() => _selected = selected);
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 285,
+    child: LayoutBuilder(
+      builder: (context, constraints) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (details) =>
+            _selectAt(details.localPosition, constraints.maxWidth),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _AnnualChartPainter(widget.comparison),
+              ),
+            ),
+            if (_selected != null)
+              Positioned(
+                top: 6,
+                right: 2,
+                child: _AnnualTooltip(
+                  comparison: widget.comparison,
+                  selected: _selected!,
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _AnnualTooltip extends StatelessWidget {
+  const _AnnualTooltip({required this.comparison, required this.selected});
+
+  final AnnualComparison comparison;
+  final AnalysisReading selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final previous = _valueOnDay(comparison.previous);
+    final reference = _valueOnDay(comparison.reference);
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 170),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .96),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1600275D),
+            blurRadius: 10,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: DefaultTextStyle(
+        style: const TextStyle(
+          color: AppColors.deepBlue,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_date(selected.timestamp)),
+            const SizedBox(height: 3),
+            Text('Aktuell: ${_cm(selected.valueCm)}'),
+            if (previous != null) Text('Vorjahr: ${_cm(previous)}'),
+            if (reference != null)
+              Text('${comparison.referenceLabel}: ${_cm(reference)}'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  double? _valueOnDay(List<AnalysisReading>? readings) {
+    if (readings == null) return null;
+    for (final reading in readings) {
+      if (reading.timestamp.month == selected.timestamp.month &&
+          reading.timestamp.day == selected.timestamp.day) {
+        return reading.valueCm;
+      }
+    }
+    return null;
+  }
+
+  String _date(DateTime date) =>
+      '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')}.${date.year}';
+
+  String _cm(double value) {
+    final digits = value == value.roundToDouble() ? 0 : 1;
+    return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
+  }
+}
+
+class _AnnualChartPainter extends CustomPainter {
+  const _AnnualChartPainter(this.comparison);
+
+  final AnnualComparison comparison;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const left = 42.0;
+    const right = 8.0;
+    const top = 14.0;
+    const bottom = 36.0;
+    final chart = Rect.fromLTWH(
+      left,
+      top,
+      size.width - left - right,
+      size.height - top - bottom,
+    );
+    final year = comparison.current.first.timestamp.year;
+    final start = DateTime(year);
+    final end = DateTime(year + 1).subtract(const Duration(days: 1));
+    final allValues = <double>[
+      ...comparison.current.map((point) => point.valueCm),
+      ...?comparison.previous?.map((point) => point.valueCm),
+      ...?comparison.reference?.map((point) => point.valueCm),
+      ...?comparison.band?.expand((point) => [point.lowerCm, point.upperCm]),
+    ];
+    final rawMin = allValues.reduce(math.min);
+    final rawMax = allValues.reduce(math.max);
+    final padding = math.max(.5, (rawMax - rawMin) * .12).toDouble();
+    // Der sichtbare Bereich umfasst bewusst alle Reihen, einschließlich des
+    // historischen Bands. Die Schrittweite wird auf etwa fünf Rasterabstände
+    // abgestimmt, damit die Achse Daten nicht künstlich bis 0 aufspannt.
+    final step = _niceStep((rawMax - rawMin + padding * 2) / 5);
+    final minY = ((rawMin - padding) / step).floor() * step;
+    final maxY = ((rawMax + padding) / step).ceil() * step;
+    final grid = Paint()
+      ..color = const Color(0xFFE8EFF8)
+      ..strokeWidth = 1;
+    final labelPainter = TextPainter(textDirection: TextDirection.ltr);
+    for (var value = minY; value <= maxY + step / 100; value += step) {
+      final y = chart.bottom - chart.height * (value - minY) / (maxY - minY);
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), grid);
+      labelPainter.text = TextSpan(
+        text: _axis(value),
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 10),
+      );
+      labelPainter.layout();
+      labelPainter.paint(
+        canvas,
+        Offset(
+          chart.left - labelPainter.width - 7,
+          y - labelPainter.height / 2,
+        ),
+      );
+    }
+
+    Offset position(DateTime timestamp, double value) {
+      final fraction =
+          timestamp.difference(start).inMilliseconds /
+          math.max(1, end.difference(start).inMilliseconds);
+      return Offset(
+        chart.left + chart.width * fraction,
+        chart.bottom - chart.height * (value - minY) / (maxY - minY),
+      );
+    }
+
+    final band = comparison.band;
+    if (band != null && band.length > 1) {
+      final path = Path();
+      for (var index = 0; index < band.length; index++) {
+        final point = position(band[index].timestamp, band[index].upperCm);
+        if (index == 0) {
+          path.moveTo(point.dx, point.dy);
+        } else {
+          path.lineTo(point.dx, point.dy);
+        }
+      }
+      for (var index = band.length - 1; index >= 0; index--) {
+        final point = position(band[index].timestamp, band[index].lowerCm);
+        path.lineTo(point.dx, point.dy);
+      }
+      path.close();
+      canvas.drawPath(path, Paint()..color = const Color(0x12278BE6));
+    }
+
+    void drawSeries(
+      List<AnalysisReading>? readings,
+      Color color,
+      double width,
+    ) {
+      if (readings == null || readings.length < 2) return;
+      final path = Path();
+      for (var index = 0; index < readings.length; index++) {
+        final point = position(
+          readings[index].timestamp,
+          readings[index].valueCm,
+        );
+        if (index == 0) {
+          path.moveTo(point.dx, point.dy);
+        } else {
+          path.lineTo(point.dx, point.dy);
+        }
+      }
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = width
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round,
+      );
+    }
+
+    drawSeries(comparison.previous, const Color(0xB39AA8BC), 1.1);
+    drawSeries(comparison.reference, const Color(0xFF199469), 1.7);
+    drawSeries(comparison.current, AppColors.blue, 3);
+
+    final monthPainter = TextPainter(textDirection: TextDirection.ltr);
+    for (var month = 1; month <= 12; month++) {
+      final timestamp = DateTime(year, month);
+      final fraction =
+          timestamp.difference(start).inMilliseconds /
+          math.max(1, end.difference(start).inMilliseconds);
+      final x = chart.left + chart.width * fraction;
+      monthPainter.text = TextSpan(
+        text: _month(month),
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 8),
+      );
+      monthPainter.layout();
+      monthPainter.paint(
+        canvas,
+        Offset(
+          (x - monthPainter.width / 2)
+              .clamp(chart.left, chart.right - monthPainter.width)
+              .toDouble(),
+          chart.bottom + 9,
+        ),
+      );
+    }
+  }
+
+  String _axis(double value) => value == value.roundToDouble()
+      ? value.round().toString()
+      : value.toStringAsFixed(1).replaceAll('.', ',');
+
+  double _niceStep(double value) {
+    final exponent = math
+        .pow(10, (math.log(value) / math.ln10).floor())
+        .toDouble();
+    final candidates = <double>[
+      exponent / 10,
+      exponent / 5,
+      exponent / 4,
+      exponent / 2,
+      exponent,
+      exponent * 2,
+      exponent * 2.5,
+      exponent * 5,
+      exponent * 10,
+    ];
+    return candidates.reduce(
+      (best, candidate) =>
+          (candidate - value).abs() < (best - value).abs() ? candidate : best,
+    );
+  }
+
+  String _month(int month) => const [
+    'Jan',
+    'Feb',
+    'Mär',
+    'Apr',
+    'Mai',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Okt',
+    'Nov',
+    'Dez',
+  ][month - 1];
+
+  @override
+  bool shouldRepaint(covariant _AnnualChartPainter oldDelegate) =>
+      oldDelegate.comparison != comparison;
+}
+
 class _AnalysisChartPainter extends CustomPainter {
   const _AnalysisChartPainter(this.readings, this.period);
 
@@ -1996,10 +2540,9 @@ class _AnalysisChartPainter extends CustomPainter {
       );
     }
 
-    final plottedReadings = _readingsForDisplay();
-    final path = Path();
-    for (var index = 0; index < plottedReadings.length; index++) {
-      final reading = plottedReadings[index];
+    final plottedReadings = AnalysisDisplaySmoother.smooth(readings, period);
+    final displayPoints = <Offset>[];
+    for (final reading in plottedReadings) {
       final x =
           chart.left +
           chart.width *
@@ -2008,12 +2551,9 @@ class _AnalysisChartPainter extends CustomPainter {
       final y =
           chart.bottom -
           chart.height * (reading.valueCm - minY) / (maxY - minY);
-      if (index == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
-      }
+      displayPoints.add(Offset(x, y));
     }
+    final path = _boundedSmoothPath(displayPoints);
     canvas.drawPath(
       path,
       Paint()
@@ -2044,29 +2584,29 @@ class _AnalysisChartPainter extends CustomPainter {
     }
   }
 
-  List<AnalysisReading> _readingsForDisplay() {
-    final target = switch (period) {
-      AnalysisPeriod.hours24 => readings.length,
-      AnalysisPeriod.days7 => 220,
-      AnalysisPeriod.days30 => 260,
-      AnalysisPeriod.year1 => readings.length,
-    };
-    if (readings.length <= target) return readings;
-    final bucketCount = math.max(1, target ~/ 2);
-    final selected = <AnalysisReading>{readings.first, readings.last};
-    for (var bucket = 0; bucket < bucketCount; bucket++) {
-      final from = (bucket * readings.length / bucketCount).floor();
-      final to = math.min(
-        readings.length,
-        ((bucket + 1) * readings.length / bucketCount).ceil(),
-      );
-      final points = readings.sublist(from, to);
-      selected.add(points.reduce((a, b) => a.valueCm < b.valueCm ? a : b));
-      selected.add(points.reduce((a, b) => a.valueCm > b.valueCm ? a : b));
+  Path _boundedSmoothPath(List<Offset> points) {
+    final path = Path();
+    if (points.isEmpty) return path;
+    path.moveTo(points.first.dx, points.first.dy);
+    if (points.length == 1) return path;
+    if (points.length == 2) {
+      path.lineTo(points.last.dx, points.last.dy);
+      return path;
     }
-    final result = selected.toList()
-      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    return result;
+    // Quadratic segments end at consecutive midpoints. Their control points
+    // and endpoints remain within the measured display range, unlike a free
+    // spline they cannot create visible overshoot above or below the data.
+    for (var index = 1; index < points.length - 1; index++) {
+      final current = points[index];
+      final next = points[index + 1];
+      final midpoint = Offset(
+        (current.dx + next.dx) / 2,
+        (current.dy + next.dy) / 2,
+      );
+      path.quadraticBezierTo(current.dx, current.dy, midpoint.dx, midpoint.dy);
+    }
+    path.lineTo(points.last.dx, points.last.dy);
+    return path;
   }
 
   List<_ChartTick> _xTicks(DateTime start, DateTime end) {
@@ -2275,6 +2815,7 @@ class _LiveLevelCard extends StatelessWidget {
                   button: true,
                   label: 'Messstelle auswählen',
                   child: InkWell(
+                    key: const ValueKey('live-station-selector'),
                     onTap: stations.isEmpty
                         ? null
                         : () => onOpenStationSelector(stations),
@@ -3549,6 +4090,7 @@ class _BottomNavigation extends StatelessWidget {
         Expanded(
           child: Center(
             child: _NavItem(
+              key: const ValueKey('nav-live'),
               icon: Icons.waves_rounded,
               label: 'Live',
               active: !analysisActive && !mapActive && !moreActive,
@@ -3559,6 +4101,7 @@ class _BottomNavigation extends StatelessWidget {
         Expanded(
           child: Center(
             child: _NavItem(
+              key: const ValueKey('nav-analysis'),
               icon: Icons.query_stats_rounded,
               label: 'Analyse',
               active: analysisActive,
