@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'analysis_service.dart';
+import 'activities_boats_service.dart';
 import 'bafu_hydro_service.dart';
 import 'environment_service.dart';
 import 'favorites_service.dart';
@@ -129,7 +130,7 @@ class StationSelectionScope extends InheritedNotifier<StationSelectionService> {
       ?.notifier;
 }
 
-enum AppDestination { live, analysis, map, more }
+enum AppDestination { today, live, analysis, map, more }
 
 void _navigateTo(
   BuildContext context,
@@ -201,6 +202,7 @@ class _DashboardPageState extends State<DashboardPage> {
   void _openInitialDestination() {
     if (!mounted) return;
     final page = switch (widget.initialDestination) {
+      AppDestination.today => const TodayPage(),
       AppDestination.live => null,
       AppDestination.analysis => const AnalysisPage(),
       AppDestination.map => MapPage(
@@ -440,6 +442,7 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
+      onToday: () => _navigateTo(context, AppDestination.today),
       onAnalysis: () => _navigateTo(context, AppDestination.analysis),
       onMap: () => _navigateTo(context, AppDestination.map),
       onMore: () => _navigateTo(context, AppDestination.more),
@@ -537,6 +540,543 @@ class _DashboardPageState extends State<DashboardPage> {
   );
 }
 
+class TodayPage extends StatefulWidget {
+  const TodayPage({super.key});
+
+  @override
+  State<TodayPage> createState() => _TodayPageState();
+}
+
+class _TodayPageState extends State<TodayPage> {
+  static const _stations = StationSelectionService.stations;
+  final _activitiesBoatsService = ActivitiesBoatsService();
+  PegelStation _station = PegelOnlineService.konstanz;
+  StationSelectionService? _stationSelection;
+  late DateTime _selectedDate;
+  List<String> _selectedActivityIds = const [];
+  bool _activitiesLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = _dayOnly(DateTime.now());
+    _loadSelectedActivities();
+  }
+
+  Future<void> _loadSelectedActivities() async {
+    final data = await _activitiesBoatsService.load(
+      validActivities: plannerActivities
+          .map((activity) => activity.id)
+          .toList(),
+    );
+    if (mounted) {
+      setState(() {
+        _selectedActivityIds = data.selectedActivities;
+        _activitiesLoaded = true;
+      });
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final selection = StationSelectionScope.maybeOf(context);
+    if (selection == _stationSelection) return;
+    _stationSelection?.removeListener(_syncStation);
+    _stationSelection = selection;
+    selection?.addListener(_syncStation);
+    _station = selection?.currentStation ?? _station;
+  }
+
+  void _syncStation() {
+    final station = _stationSelection?.currentStation;
+    if (station != null && mounted && station.uuid != _station.uuid) {
+      setState(() => _station = station);
+    }
+  }
+
+  Future<void> _selectStation() async {
+    final station = await showModalBottomSheet<PegelStation>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) =>
+          _StationSelector(stations: _stations, selectedStation: _station),
+    );
+    if (station != null && mounted) {
+      _stationSelection?.select(station);
+      if (_stationSelection == null) setState(() => _station = station);
+    }
+  }
+
+  @override
+  void dispose() {
+    _stationSelection?.removeListener(_syncStation);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final start = _dayOnly(DateTime.now());
+    final days = List<DateTime>.generate(
+      7,
+      (index) => start.add(Duration(days: index)),
+    );
+    final visibleActivities = !_activitiesLoaded || _selectedActivityIds.isEmpty
+        ? plannerActivities
+        : plannerActivities
+              .where((activity) => _selectedActivityIds.contains(activity.id))
+              .toList(growable: false);
+    return Scaffold(
+      bottomNavigationBar: _BottomNavigation(
+        onLive: () => _navigateTo(context, AppDestination.live),
+        onAnalysis: () => _navigateTo(context, AppDestination.analysis),
+        onMap: () => _navigateTo(context, AppDestination.map),
+        onMore: () => _navigateTo(context, AppDestination.more),
+        todayActive: true,
+      ),
+      body: Stack(
+        children: [
+          const _PhotoBackdrop(),
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 22, 20, 140),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'HEUTE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: .5,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  _AnalysisStationButton(
+                    station: _station,
+                    onTap: _selectStation,
+                  ),
+                  const SizedBox(height: 16),
+                  _DayPicker(
+                    days: days,
+                    selectedDay: _selectedDate,
+                    onSelected: (day) => setState(() => _selectedDate = day),
+                  ),
+                  const SizedBox(height: 18),
+                  _TodayOverviewCard(date: _selectedDate, station: _station),
+                  const SizedBox(height: 20),
+                  _TodayActivitiesSection(activities: visibleActivities),
+                  const SizedBox(height: 20),
+                  _WeeklyPlannerSection(
+                    days: days,
+                    activities: visibleActivities,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+DateTime _dayOnly(DateTime value) =>
+    DateTime(value.year, value.month, value.day);
+
+const _weekdayShort = <String>['MO', 'DI', 'MI', 'DO', 'FR', 'SA', 'SO'];
+
+String _shortDayLabel(DateTime day, {required bool isToday}) => isToday
+    ? 'HEUTE'
+    : '${_weekdayShort[day.weekday - 1]} ${day.day.toString().padLeft(2, '0')}';
+
+String _longDayLabel(DateTime day) =>
+    '${_weekdayShort[day.weekday - 1]} ${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}';
+
+class _DayPicker extends StatelessWidget {
+  const _DayPicker({
+    required this.days,
+    required this.selectedDay,
+    required this.onSelected,
+  });
+
+  final List<DateTime> days;
+  final DateTime selectedDay;
+  final ValueChanged<DateTime> onSelected;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final chips = List<Widget>.generate(
+        days.length,
+        (index) => _DayChoiceChip(
+          key: ValueKey('today-day-$index'),
+          label: _shortDayLabel(days[index], isToday: index == 0),
+          selected: days[index] == selectedDay,
+          onSelected: () => onSelected(days[index]),
+        ),
+      );
+
+      // On normal phone widths all seven dates remain visible. On unusually
+      // narrow layouts the same chips retain their comfortable tap target in a
+      // horizontal scroller instead of shrinking their labels excessively.
+      if (constraints.maxWidth >= 330) {
+        return SizedBox(
+          key: const ValueKey('today-day-picker'),
+          height: 38,
+          child: Row(
+            children: [
+              for (var index = 0; index < chips.length; index++) ...[
+                Expanded(flex: index == 0 ? 13 : 10, child: chips[index]),
+                if (index < chips.length - 1) const SizedBox(width: 3),
+              ],
+            ],
+          ),
+        );
+      }
+
+      return SizedBox(
+        height: 38,
+        child: ListView.separated(
+          key: const ValueKey('today-day-picker'),
+          scrollDirection: Axis.horizontal,
+          itemCount: chips.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 4),
+          itemBuilder: (_, index) =>
+              SizedBox(width: index == 0 ? 62 : 53, child: chips[index]),
+        ),
+      );
+    },
+  );
+}
+
+class _DayChoiceChip extends StatelessWidget {
+  const _DayChoiceChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) => ChoiceChip(
+    label: Center(child: Text(label, maxLines: 1, overflow: TextOverflow.clip)),
+    selected: selected,
+    onSelected: (_) => onSelected(),
+    selectedColor: AppColors.blue,
+    backgroundColor: Colors.white,
+    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    visualDensity: VisualDensity.compact,
+    padding: const EdgeInsets.symmetric(horizontal: 3),
+    labelStyle: TextStyle(
+      color: selected ? Colors.white : AppColors.navy,
+      fontWeight: FontWeight.w800,
+      fontSize: 10,
+    ),
+    side: BorderSide(
+      color: selected ? AppColors.blue : const Color(0xFFE1EAF5),
+    ),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
+  );
+}
+
+class _TodayOverviewCard extends StatelessWidget {
+  const _TodayOverviewCard({required this.date, required this.station});
+
+  final DateTime date;
+  final PegelStation station;
+
+  static const _items = <(IconData, String)>[
+    (Icons.cloud_outlined, 'Wetter'),
+    (Icons.thermostat_rounded, 'Temperatur'),
+    (Icons.water_drop_outlined, 'Niederschlag'),
+    (Icons.air_rounded, 'Wind'),
+    (Icons.speed_rounded, 'Böen'),
+    (Icons.waves_rounded, 'Pegel'),
+    (Icons.warning_amber_rounded, 'Warnungen'),
+  ];
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(18),
+    decoration: _cardDecoration(),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'TAGESÜBERSICHT · ${_longDayLabel(date)}',
+          style: const TextStyle(
+            color: AppColors.deepBlue,
+            fontSize: 16,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          station.name,
+          style: const TextStyle(color: Color(0xFF71809A), fontSize: 13),
+        ),
+        const SizedBox(height: 16),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final width = (constraints.maxWidth - 10) / 2;
+            return Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: _items
+                  .map(
+                    (item) => SizedBox(
+                      width: width,
+                      child: _TodayMetric(icon: item.$1, label: item.$2),
+                    ),
+                  )
+                  .toList(),
+            );
+          },
+        ),
+      ],
+    ),
+  );
+}
+
+class _TodayMetric extends StatelessWidget {
+  const _TodayMetric({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(11),
+    decoration: BoxDecoration(
+      color: const Color(0xFFF5F9FF),
+      borderRadius: BorderRadius.circular(15),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, color: AppColors.blue, size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.navy,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 3),
+              const Text(
+                'Noch keine Prognosedaten verfügbar',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Color(0xFF71809A),
+                  fontSize: 10,
+                  height: 1.2,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _PlannerActivity {
+  const _PlannerActivity(this.id, this.label, this.icon);
+
+  final String id;
+  final String label;
+  final IconData icon;
+}
+
+const plannerActivities = <_PlannerActivity>[
+  _PlannerActivity('sup_kajak', 'SUP / Kajak', Icons.kayaking_rounded),
+  _PlannerActivity('segeln', 'Segeln', Icons.sailing_rounded),
+  _PlannerActivity('motorboot', 'Motorboot', Icons.directions_boat_rounded),
+  _PlannerActivity('kiten', 'Kiten', Icons.air_rounded),
+  _PlannerActivity('angeln', 'Angeln', Icons.phishing_rounded),
+  _PlannerActivity('baden', 'Baden / Schwimmen', Icons.pool_rounded),
+  _PlannerActivity('radfahren', 'Radfahren', Icons.directions_bike_rounded),
+  _PlannerActivity('wandern', 'Wandern', Icons.hiking_rounded),
+];
+
+class _TodayActivitiesSection extends StatelessWidget {
+  const _TodayActivitiesSection({required this.activities});
+
+  final List<_PlannerActivity> activities;
+
+  @override
+  Widget build(BuildContext context) => _MoreSection(
+    title: 'DEIN TAG AM SEE',
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      child: Column(
+        children: [
+          for (var index = 0; index < activities.length; index++) ...[
+            _TodayActivityRow(activity: activities[index]),
+            if (index < activities.length - 1)
+              const Divider(height: 1, color: Color(0xFFEAF0F7)),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
+class _TodayActivityRow extends StatelessWidget {
+  const _TodayActivityRow({required this.activity});
+
+  final _PlannerActivity activity;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    key: ValueKey('today-activity-${activity.id}'),
+    height: 47,
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Row(
+          children: [
+            SizedBox(
+              width: 30,
+              child: Icon(activity.icon, color: AppColors.blue, size: 21),
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              flex: 4,
+              child: Text(
+                activity.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.navy,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Expanded(
+              flex: 5,
+              child: Text(
+                'Noch keine Bewertung',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
+                style: TextStyle(color: Color(0xFF71809A), fontSize: 11),
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+class _WeeklyPlannerSection extends StatelessWidget {
+  const _WeeklyPlannerSection({required this.days, required this.activities});
+
+  final List<DateTime> days;
+  final List<_PlannerActivity> activities;
+
+  @override
+  Widget build(BuildContext context) => _MoreSection(
+    title: 'WOCHENÜBERSICHT',
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Noch keine Bewertung',
+            style: TextStyle(color: Color(0xFF71809A), fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              defaultColumnWidth: const FixedColumnWidth(52),
+              columnWidths: const {0: FixedColumnWidth(118)},
+              border: TableBorder.all(
+                color: const Color(0xFFE6EDF6),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              children: [
+                TableRow(
+                  decoration: const BoxDecoration(color: Color(0xFFF5F9FF)),
+                  children: [
+                    const _PlannerTableCell(''),
+                    ...days.map(
+                      (day) => _PlannerTableCell(
+                        _shortDayLabel(day, isToday: day == days.first),
+                      ),
+                    ),
+                  ],
+                ),
+                ...activities.map(
+                  (activity) => TableRow(
+                    children: [
+                      KeyedSubtree(
+                        key: ValueKey('weekly-activity-${activity.id}'),
+                        child: _PlannerTableCell(
+                          activity.label,
+                          alignLeft: true,
+                        ),
+                      ),
+                      ...days.map((_) => const _PlannerTableCell('–')),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _PlannerTableCell extends StatelessWidget {
+  const _PlannerTableCell(this.text, {this.alignLeft = false});
+
+  final String text;
+  final bool alignLeft;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 36,
+    child: Align(
+      alignment: alignLeft ? Alignment.centerLeft : Alignment.center,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 5),
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: Color(0xFF64738D),
+            fontSize: alignLeft ? 11 : 9,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 class MapPage extends StatefulWidget {
   const MapPage({
     super.key,
@@ -604,6 +1144,7 @@ class _MapPageState extends State<MapPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
+      onToday: () => _navigateTo(context, AppDestination.today),
       onLive: () => _navigateTo(context, AppDestination.live),
       onAnalysis: () => _navigateTo(context, AppDestination.analysis),
       onMore: () => _navigateTo(context, AppDestination.more),
@@ -978,6 +1519,7 @@ class _MorePageState extends State<MorePage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     bottomNavigationBar: _BottomNavigation(
+      onToday: () => _navigateTo(context, AppDestination.today),
       onLive: () => _navigateTo(context, AppDestination.live),
       onAnalysis: () => _navigateTo(context, AppDestination.analysis),
       onMap: () => _navigateTo(context, AppDestination.map),
@@ -1029,6 +1571,20 @@ class _MorePageState extends State<MorePage> {
                     title: 'Pegelgrenzen und Warnungen folgen',
                     detail: 'Benachrichtigungen werden in einer späteren Version ergänzt.',
                     muted: true,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                _MoreSection(
+                  title: 'PERSONALISIERUNG',
+                  child: _MoreActionRow(
+                    icon: Icons.directions_boat_outlined,
+                    title: 'Meine Aktivitäten & Boote',
+                    detail: 'Aktivitäten auswählen und Boote lokal verwalten',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const ActivitiesBoatsPage(),
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 18),
@@ -1085,6 +1641,467 @@ class _MorePageState extends State<MorePage> {
           ),
         ),
       ],
+    ),
+  );
+}
+
+class ActivitiesBoatsPage extends StatefulWidget {
+  const ActivitiesBoatsPage({super.key});
+
+  @override
+  State<ActivitiesBoatsPage> createState() => _ActivitiesBoatsPageState();
+}
+
+class _ActivitiesBoatsPageState extends State<ActivitiesBoatsPage> {
+  final _service = ActivitiesBoatsService();
+  late Future<ActivitiesBoatsData> _data;
+  List<String> _selectedActivities = const [];
+  List<BoatProfile> _boats = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _data = _load();
+  }
+
+  Future<ActivitiesBoatsData> _load() async {
+    final data = await _service.load(
+      validActivities: plannerActivities
+          .map((activity) => activity.id)
+          .toList(),
+    );
+    _selectedActivities = data.selectedActivities;
+    _boats = data.boats;
+    return data;
+  }
+
+  Future<void> _toggleActivity(_PlannerActivity activity, bool selected) async {
+    final updated = [..._selectedActivities];
+    if (selected) {
+      if (!updated.contains(activity.id)) updated.add(activity.id);
+    } else {
+      updated.remove(activity.id);
+    }
+    setState(() => _selectedActivities = updated);
+    await _service.saveActivities(updated);
+  }
+
+  Future<void> _addBoat() async {
+    final result = await _openBoatForm();
+    if (result?.boat == null || !mounted) return;
+    final updated = [..._boats, result!.boat!];
+    setState(() => _boats = updated);
+    await _service.saveBoats(updated);
+  }
+
+  Future<_BoatFormResult?> _openBoatForm({BoatProfile? boat}) =>
+      showModalBottomSheet<_BoatFormResult>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => _BoatFormSheet(initialBoat: boat),
+      );
+
+  Future<void> _editBoat(BoatProfile boat) async {
+    final result = await _openBoatForm(boat: boat);
+    if (result == null || !mounted) return;
+    final updated = switch (result.deleted) {
+      true => _boats.where((candidate) => candidate.id != boat.id).toList(),
+      false =>
+        _boats
+            .map(
+              (candidate) => candidate.id == boat.id ? result.boat! : candidate,
+            )
+            .toList(),
+    };
+    setState(() => _boats = updated);
+    await _service.saveBoats(updated);
+  }
+
+  @override
+  Widget build(BuildContext context) => _MoreSubpage(
+    title: 'Meine Aktivitäten & Boote',
+    child: FutureBuilder<ActivitiesBoatsData>(
+      future: _data,
+      builder: (context, snapshot) {
+        final loading = !snapshot.hasData;
+        return Column(
+          children: [
+            _MoreSection(
+              title: 'MEINE AKTIVITÄTEN',
+              child: loading
+                  ? const Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  : Column(
+                      children: plannerActivities
+                          .map(
+                            (activity) => SwitchListTile.adaptive(
+                              key: ValueKey('activity-${activity.id}'),
+                              secondary: Icon(
+                                activity.icon,
+                                color: AppColors.blue,
+                              ),
+                              title: Text(
+                                activity.label,
+                                style: const TextStyle(
+                                  color: AppColors.navy,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              value: _selectedActivities.contains(activity.id),
+                              activeTrackColor: AppColors.blue,
+                              onChanged: (selected) =>
+                                  _toggleActivity(activity, selected),
+                            ),
+                          )
+                          .toList(),
+                    ),
+            ),
+            const SizedBox(height: 18),
+            _MoreSection(
+              title: 'MEINE BOOTE',
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (loading)
+                      const Center(child: CircularProgressIndicator())
+                    else if (_boats.isEmpty)
+                      const Text(
+                        'Noch keine Boote gespeichert.',
+                        style: TextStyle(
+                          color: Color(0xFF71809A),
+                          fontSize: 14,
+                        ),
+                      )
+                    else
+                      ..._boats.map(
+                        (boat) => _BoatProfileRow(
+                          boat: boat,
+                          onTap: () => _editBoat(boat),
+                        ),
+                      ),
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        key: const ValueKey('add-boat-button'),
+                        onPressed: loading ? null : _addBoat,
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Boot hinzufügen'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class _BoatProfileRow extends StatelessWidget {
+  const _BoatProfileRow({required this.boat, required this.onTap});
+
+  final BoatProfile boat;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final typeLabel = boat.bootType == BoatType.sailboat
+        ? 'Segelboot'
+        : 'Motorboot';
+    final title = boat.name ?? typeLabel;
+    final details = <String>[
+      typeLabel,
+      if (boat.lengthMeters != null)
+        '${boat.lengthMeters!.toStringAsFixed(1).replaceAll('.', ',')} m Länge',
+      if (boat.draftMeters != null)
+        '${boat.draftMeters!.toStringAsFixed(1).replaceAll('.', ',')} m Tiefgang',
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: const Color(0xFFF5F9FF),
+        borderRadius: BorderRadius.circular(15),
+        child: InkWell(
+          key: ValueKey('boat-row-${boat.id}'),
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(15),
+          child: Padding(
+            padding: const EdgeInsets.all(13),
+            child: Row(
+              children: [
+                Icon(
+                  boat.bootType == BoatType.sailboat
+                      ? Icons.sailing_rounded
+                      : Icons.directions_boat_rounded,
+                  color: AppColors.blue,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: AppColors.navy,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        details.join(' · '),
+                        style: const TextStyle(
+                          color: Color(0xFF71809A),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  color: Color(0xFF71809A),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BoatFormResult {
+  const _BoatFormResult.saved(this.boat) : deleted = false;
+  const _BoatFormResult.deleted() : boat = null, deleted = true;
+
+  final BoatProfile? boat;
+  final bool deleted;
+}
+
+class _BoatFormSheet extends StatefulWidget {
+  const _BoatFormSheet({this.initialBoat});
+
+  final BoatProfile? initialBoat;
+
+  @override
+  State<_BoatFormSheet> createState() => _BoatFormSheetState();
+}
+
+class _BoatFormSheetState extends State<_BoatFormSheet> {
+  BoatType _type = BoatType.motorboat;
+  final _name = TextEditingController();
+  final _length = TextEditingController();
+  final _width = TextEditingController();
+  final _draft = TextEditingController();
+  final _height = TextEditingController();
+
+  bool get _isEditing => widget.initialBoat != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final boat = widget.initialBoat;
+    if (boat == null) return;
+    _type = boat.bootType;
+    _name.text = boat.name ?? '';
+    _length.text = _formatNumber(boat.lengthMeters);
+    _width.text = _formatNumber(boat.widthMeters);
+    _draft.text = _formatNumber(boat.draftMeters);
+    _height.text = _formatNumber(boat.heightAboveWaterlineMeters);
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _length.dispose();
+    _width.dispose();
+    _draft.dispose();
+    _height.dispose();
+    super.dispose();
+  }
+
+  double? _number(TextEditingController controller) =>
+      double.tryParse(controller.text.trim().replaceAll(',', '.'));
+
+  String _formatNumber(double? value) => value == null
+      ? ''
+      : value
+            .toStringAsFixed(value.truncateToDouble() == value ? 0 : 1)
+            .replaceAll('.', ',');
+
+  void _save() {
+    Navigator.of(context).pop(
+      _BoatFormResult.saved(
+        BoatProfile(
+          id:
+              widget.initialBoat?.id ??
+              DateTime.now().microsecondsSinceEpoch.toString(),
+          name: _name.text.trim().isEmpty ? null : _name.text.trim(),
+          bootType: _type,
+          lengthMeters: _number(_length),
+          widthMeters: _number(_width),
+          draftMeters: _number(_draft),
+          heightAboveWaterlineMeters: _number(_height),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _delete() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Boot wirklich löschen?'),
+        content: const Text('Dieses Boot wird aus der lokalen Liste entfernt.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            key: const ValueKey('boat-confirm-delete'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Löschen'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      Navigator.of(context).pop(const _BoatFormResult.deleted());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Padding(
+      padding: EdgeInsets.fromLTRB(
+        20,
+        20,
+        20,
+        20 + MediaQuery.viewInsetsOf(context).bottom,
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: _cardDecoration(radius: 26),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _isEditing ? 'Boot bearbeiten' : 'Boot hinzufügen',
+                style: const TextStyle(
+                  color: AppColors.deepBlue,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<BoatType>(
+                key: const ValueKey('boat-type-field'),
+                initialValue: _type,
+                decoration: const InputDecoration(labelText: 'Bootstyp'),
+                items: const [
+                  DropdownMenuItem(
+                    value: BoatType.motorboat,
+                    child: Text('Motorboot'),
+                  ),
+                  DropdownMenuItem(
+                    value: BoatType.sailboat,
+                    child: Text('Segelboot'),
+                  ),
+                ],
+                onChanged: (type) =>
+                    setState(() => _type = type ?? BoatType.motorboat),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const ValueKey('boat-name-field'),
+                controller: _name,
+                decoration: const InputDecoration(labelText: 'Name (optional)'),
+              ),
+              const SizedBox(height: 10),
+              _BoatNumberField(
+                key: const ValueKey('boat-length-field'),
+                controller: _length,
+                label: 'Länge (m)',
+              ),
+              _BoatNumberField(
+                key: const ValueKey('boat-width-field'),
+                controller: _width,
+                label: 'Breite (m)',
+              ),
+              _BoatNumberField(
+                key: const ValueKey('boat-draft-field'),
+                controller: _draft,
+                label: 'Tiefgang (m)',
+              ),
+              _BoatNumberField(
+                key: const ValueKey('boat-height-field'),
+                controller: _height,
+                label: 'Höhe über Wasserlinie (m)',
+                helperText: 'Höchster Punkt des Bootes über der Wasseroberfläche, z. B. Verdeck, Antenne oder Mast.',
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  key: const ValueKey('boat-add-submit'),
+                  onPressed: _save,
+                  child: const Text('Boot speichern'),
+                ),
+              ),
+              if (_isEditing) ...[
+                const SizedBox(height: 10),
+                Center(
+                  child: TextButton(
+                    key: const ValueKey('boat-delete-button'),
+                    onPressed: _delete,
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF71809A),
+                    ),
+                    child: const Text('Boot löschen'),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _BoatNumberField extends StatelessWidget {
+  const _BoatNumberField({
+    super.key,
+    required this.controller,
+    required this.label,
+    this.helperText,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String? helperText;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 10),
+    child: TextField(
+      controller: controller,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: InputDecoration(labelText: label, helperText: helperText),
     ),
   );
 }
@@ -1308,7 +2325,14 @@ class _MoreSection extends StatelessWidget {
           ),
         ),
       ),
-      Container(decoration: _cardDecoration(radius: 24), child: child),
+      Container(
+        decoration: _cardDecoration(radius: 24),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(24),
+          child: child,
+        ),
+      ),
     ],
   );
 }
@@ -1660,6 +2684,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
     final periods = _analysisService.periodsFor(_station);
     return Scaffold(
       bottomNavigationBar: _BottomNavigation(
+        onToday: () => _navigateTo(context, AppDestination.today),
         onLive: () => _navigateTo(context, AppDestination.live),
         onMap: () => _navigateTo(context, AppDestination.map),
         onMore: () => _navigateTo(context, AppDestination.more),
@@ -4611,19 +5636,23 @@ class _EnvironmentSection extends StatelessWidget {
 
 class _BottomNavigation extends StatelessWidget {
   const _BottomNavigation({
+    this.onToday,
     this.onLive,
     this.onAnalysis,
     this.onMap,
     this.onMore,
+    this.todayActive = false,
     this.analysisActive = false,
     this.mapActive = false,
     this.moreActive = false,
   });
 
+  final VoidCallback? onToday;
   final VoidCallback? onLive;
   final VoidCallback? onAnalysis;
   final VoidCallback? onMap;
   final VoidCallback? onMore;
+  final bool todayActive;
   final bool analysisActive;
   final bool mapActive;
   final bool moreActive;
@@ -4631,7 +5660,7 @@ class _BottomNavigation extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     height: 113,
-    padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+    padding: const EdgeInsets.fromLTRB(8, 10, 8, 18),
     decoration: const BoxDecoration(
       color: Colors.white,
       boxShadow: [
@@ -4647,10 +5676,22 @@ class _BottomNavigation extends StatelessWidget {
         Expanded(
           child: Center(
             child: _NavItem(
+              key: const ValueKey('nav-today'),
+              icon: Icons.calendar_today_rounded,
+              label: 'Heute',
+              active: todayActive,
+              onTap: onToday,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Center(
+            child: _NavItem(
               key: const ValueKey('nav-live'),
               icon: Icons.waves_rounded,
               label: 'Live',
-              active: !analysisActive && !mapActive && !moreActive,
+              active:
+                  !todayActive && !analysisActive && !mapActive && !moreActive,
               onTap: onLive,
             ),
           ),
@@ -4719,7 +5760,7 @@ class _NavItem extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
             color: active ? const Color(0xFFE7F1FF) : Colors.transparent,
             borderRadius: BorderRadius.circular(20),
@@ -4727,7 +5768,7 @@ class _NavItem extends StatelessWidget {
           child: Icon(
             icon,
             color: active ? AppColors.blue : AppColors.navy,
-            size: 31,
+            size: 28,
           ),
         ),
         const SizedBox(height: 2),

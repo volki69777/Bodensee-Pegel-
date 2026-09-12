@@ -9,6 +9,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 
 import 'package:bodensee_pegel/main.dart';
 import 'package:bodensee_pegel/bafu_hydro_service.dart';
+import 'package:bodensee_pegel/activities_boats_service.dart';
 import 'package:bodensee_pegel/favorites_service.dart';
 import 'package:bodensee_pegel/station_data_cache.dart';
 import 'package:bodensee_pegel/station_selection_service.dart';
@@ -33,6 +34,327 @@ void main() {
 
     expect(find.text('Bodensee Pegel+'), findsOneWidget);
     expect(find.byType(DashboardPage), findsOneWidget);
+  });
+
+  testWidgets('navigates through all primary destinations including Today', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-today')));
+    await tester.pumpAndSettle();
+    expect(find.byType(TodayPage), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('nav-live')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DashboardPage), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('nav-analysis')));
+    await tester.pumpAndSettle();
+    expect(find.byType(AnalysisPage), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('nav-map')));
+    await tester.pumpAndSettle();
+    expect(find.byType(MapPage), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('nav-more')));
+    await tester.pumpAndSettle();
+    expect(find.byType(MorePage), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('nav-today')));
+    await tester.pumpAndSettle();
+    expect(find.byType(TodayPage), findsOneWidget);
+  });
+
+  testWidgets('Today day picker selects another day', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: TodayPage()));
+    await tester.pumpAndSettle();
+
+    final tomorrow = find.byKey(const ValueKey('today-day-1'));
+    await tester.tap(tomorrow);
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.descendant(of: tomorrow, matching: find.byType(ChoiceChip)),
+          )
+          .selected,
+      isTrue,
+    );
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.descendant(
+              of: find.byKey(const ValueKey('today-day-0')),
+              matching: find.byType(ChoiceChip),
+            ),
+          )
+          .selected,
+      isFalse,
+    );
+  });
+
+  testWidgets('Today uses the shared selected station', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('live-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('nav-today')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(TodayPage), findsOneWidget);
+    expect(find.text('ROMANSHORN'), findsWidgets);
+  });
+
+  testWidgets('opens activities and boats settings from Mehr', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('nav-more')));
+    await tester.pumpAndSettle();
+
+    final entry = find.text('Meine Aktivitäten & Boote');
+    await tester.ensureVisible(entry);
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ActivitiesBoatsPage), findsOneWidget);
+    expect(find.text('MEINE AKTIVITÄTEN'), findsOneWidget);
+    expect(find.text('MEINE BOOTE'), findsOneWidget);
+  });
+
+  testWidgets('activities and multiple boats persist after a widget rebuild', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const MaterialApp(home: ActivitiesBoatsPage()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('activity-segeln')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<SwitchListTile>(find.byKey(const ValueKey('activity-segeln')))
+          .value,
+      isTrue,
+    );
+
+    Future<void> addBoat(String name) async {
+      await tester.tap(find.byKey(const ValueKey('add-boat-button')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('boat-name-field')),
+        name,
+      );
+      await tester.tap(find.byKey(const ValueKey('boat-add-submit')));
+      await tester.pumpAndSettle();
+    }
+
+    await addBoat('Seestern');
+    await addBoat('Albatros');
+    expect(find.text('Seestern'), findsOneWidget);
+    expect(find.text('Albatros'), findsOneWidget);
+
+    await tester.pumpWidget(const MaterialApp(home: ActivitiesBoatsPage()));
+    await tester.pumpAndSettle();
+    expect(find.text('Seestern'), findsOneWidget);
+    expect(find.text('Albatros'), findsOneWidget);
+    expect(
+      tester
+          .widget<SwitchListTile>(find.byKey(const ValueKey('activity-segeln')))
+          .value,
+      isTrue,
+    );
+  });
+
+  testWidgets('edits an existing boat without creating a duplicate', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final service = ActivitiesBoatsService();
+    await service.saveBoats(const [
+      BoatProfile(
+        id: 'seestern',
+        name: 'Seestern',
+        bootType: BoatType.motorboat,
+        lengthMeters: 6,
+        widthMeters: 2.2,
+        draftMeters: .6,
+        heightAboveWaterlineMeters: 1.8,
+      ),
+    ]);
+
+    await tester.pumpWidget(const MaterialApp(home: ActivitiesBoatsPage()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('boat-row-seestern')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Boot bearbeiten'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('boat-name-field')))
+          .controller!
+          .text,
+      'Seestern',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.byKey(const ValueKey('boat-length-field')),
+              matching: find.byType(TextField),
+            ),
+          )
+          .controller!
+          .text,
+      '6',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.byKey(const ValueKey('boat-width-field')),
+              matching: find.byType(TextField),
+            ),
+          )
+          .controller!
+          .text,
+      '2,2',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.byKey(const ValueKey('boat-draft-field')),
+              matching: find.byType(TextField),
+            ),
+          )
+          .controller!
+          .text,
+      '0,6',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.byKey(const ValueKey('boat-height-field')),
+              matching: find.byType(TextField),
+            ),
+          )
+          .controller!
+          .text,
+      '1,8',
+    );
+
+    await tester.enterText(
+      find.byKey(const ValueKey('boat-name-field')),
+      'Seestern II',
+    );
+    await tester.tap(find.byKey(const ValueKey('boat-add-submit')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Seestern II'), findsOneWidget);
+    expect(find.text('Seestern'), findsNothing);
+    expect(find.byKey(const ValueKey('boat-row-seestern')), findsOneWidget);
+  });
+
+  testWidgets('cancels or confirms deletion of a boat', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await ActivitiesBoatsService().saveBoats(const [
+      BoatProfile(
+        id: 'albatros',
+        name: 'Albatros',
+        bootType: BoatType.sailboat,
+      ),
+    ]);
+    await tester.pumpWidget(const MaterialApp(home: ActivitiesBoatsPage()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('boat-row-albatros')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('boat-delete-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Boot wirklich löschen?'), findsOneWidget);
+    await tester.tap(find.text('Abbrechen'));
+    await tester.pumpAndSettle();
+    expect(find.text('Boot bearbeiten'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Albatros'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('boat-row-albatros')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('boat-delete-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('boat-confirm-delete')));
+    await tester.pumpAndSettle();
+    expect(find.text('Albatros'), findsNothing);
+    expect(find.text('Noch keine Boote gespeichert.'), findsOneWidget);
+  });
+
+  testWidgets('Today filters activities and weekly rows from saved choices', (
+    WidgetTester tester,
+  ) async {
+    await ActivitiesBoatsService().saveActivities(['segeln', 'wandern']);
+    await tester.pumpWidget(const MaterialApp(home: TodayPage()));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('today-activity-segeln')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('today-activity-wandern')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('today-activity-motorboot')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('weekly-activity-segeln')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('weekly-activity-wandern')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('weekly-activity-motorboot')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('Today shows all activities when none are selected', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: TodayPage()));
+    await tester.pumpAndSettle();
+
+    for (final activity in plannerActivities) {
+      expect(
+        find.byKey(ValueKey('today-activity-${activity.id}')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(ValueKey('weekly-activity-${activity.id}')),
+        findsOneWidget,
+      );
+    }
   });
 
   testWidgets('opens and closes the Romanshorn forecast detail view', (
@@ -478,7 +800,9 @@ void main() {
   testWidgets('opens Mehr information subpages', (WidgetTester tester) async {
     await tester.pumpWidget(const MaterialApp(home: MorePage()));
 
-    await tester.tap(find.text('Datenquellen & Messstationen'));
+    final sources = find.text('Datenquellen & Messstationen').first;
+    await tester.ensureVisible(sources);
+    await tester.tap(sources);
     await tester.pumpAndSettle();
     expect(find.byType(DataSourcesPage), findsOneWidget);
     expect(find.text('PEGELONLINE / WSV'), findsOneWidget);
