@@ -492,6 +492,11 @@ void main() {
     expect(find.byType(AboutPage), findsOneWidget);
     expect(find.text('BODENSEE PEGEL+'), findsOneWidget);
     expect(find.text('Version 1.0.0 (1)'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('about-data-sources-link')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DataSourcesPage), findsOneWidget);
+    expect(find.text('PEGELONLINE / WSV'), findsOneWidget);
   });
 
   for (final width in [320.0, 430.0]) {

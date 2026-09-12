@@ -654,19 +654,20 @@ class _MapPageState extends State<MapPage> {
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                 child: Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                      decoration: _cardDecoration(radius: 18),
-                      child: const Text(
-                        'KARTE',
-                        style: TextStyle(
-                          color: AppColors.deepBlue,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                        ),
+                    const Text(
+                      'KARTE',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 30,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -1,
+                        shadows: [
+                          Shadow(
+                            color: Color(0x55082E61),
+                            blurRadius: 6,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
                       ),
                     ),
                     const Spacer(),
@@ -1148,51 +1149,82 @@ class _AboutPageState extends State<AboutPage> {
   }
 
   @override
-  Widget build(BuildContext context) => _MoreSubpage(
-    title: 'Über Bodensee Pegel+',
-    child: _MoreSection(
-      title: 'BODENSEE PEGEL+',
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Bodensee Pegel+ zeigt aktuelle und historische Pegelstände sowie ausgewählte Umwelt- und Prognosedaten rund um den Bodensee.',
-              style: TextStyle(
-                color: AppColors.navy,
-                fontSize: 15,
-                height: 1.42,
-              ),
-            ),
-            const SizedBox(height: 14),
-            FutureBuilder<String?>(
-              future: _version,
-              builder: (context, snapshot) => Text(
-                snapshot.hasData && snapshot.data != null
-                    ? 'Version ${snapshot.data}'
-                    : 'Version nicht verfügbar',
-                style: const TextStyle(
-                  color: AppColors.blue,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
+  Widget build(BuildContext context) {
+    return _MoreSubpage(
+      title: 'Über Bodensee Pegel+',
+      child: _MoreSection(
+        title: 'BODENSEE PEGEL+',
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Bodensee Pegel+ zeigt aktuelle und historische Wasserstände des Bodensees sowie ausgewählte Umwelt- und Prognosedaten aus offiziellen Quellen. Analysen und saisonale Vergleiche helfen dabei, die aktuelle Pegelsituation besser einzuordnen.',
+                style: TextStyle(
+                  color: AppColors.navy,
+                  fontSize: 15,
+                  height: 1.42,
                 ),
               ),
-            ),
-            const SizedBox(height: 15),
-            const Text(
-              'Die dargestellten Daten stammen aus offiziellen Quellen, können jedoch unvollständig, verspätet oder fehlerhaft sein. Sie dürfen nicht als alleinige Grundlage für sicherheitskritische Entscheidungen verwendet werden.',
-              style: TextStyle(
-                color: Color(0xFF64738D),
-                fontSize: 13,
-                height: 1.42,
+              const SizedBox(height: 14),
+              FutureBuilder<String?>(
+                future: _version,
+                builder: (context, snapshot) => Text(
+                  snapshot.hasData && snapshot.data != null
+                      ? 'Version ${snapshot.data}'
+                      : 'Version nicht verfügbar',
+                  style: const TextStyle(
+                    color: AppColors.blue,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 15),
+              const Text(
+                'Die dargestellten Daten stammen aus offiziellen Quellen, können jedoch unvollständig, verzögert oder fehlerhaft sein. Bodensee Pegel+ ist kein amtlicher Warn- oder Informationsdienst. Die Angaben dürfen nicht als alleinige Grundlage für sicherheitskritische Entscheidungen verwendet werden.',
+                style: TextStyle(
+                  color: Color(0xFF64738D),
+                  fontSize: 13,
+                  height: 1.42,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Divider(height: 1, color: Color(0xFFE5ECF5)),
+              InkWell(
+                key: const ValueKey('about-data-sources-link'),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const DataSourcesPage(),
+                  ),
+                ),
+                borderRadius: BorderRadius.circular(10),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 11),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Datenquellen & Messstationen',
+                          style: TextStyle(
+                            color: AppColors.blue,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      Icon(Icons.chevron_right_rounded, color: AppColors.blue),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _MoreSubpage extends StatelessWidget {
