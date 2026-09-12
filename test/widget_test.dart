@@ -100,6 +100,24 @@ void main() {
     );
   });
 
+  testWidgets('weekly planner keeps all seven day columns inside its card', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const MaterialApp(home: TodayPage()));
+    await tester.pumpAndSettle();
+
+    final planner = find.byKey(const ValueKey('weekly-planner-table'));
+    await tester.ensureVisible(planner);
+    final table = tester.widget<Table>(planner);
+
+    expect(table.columnWidths, hasLength(8));
+    for (var index = 0; index <= 7; index++) {
+      expect(table.columnWidths![index], isA<FixedColumnWidth>());
+    }
+  });
+
   testWidgets('Today uses the shared selected station', (
     WidgetTester tester,
   ) async {

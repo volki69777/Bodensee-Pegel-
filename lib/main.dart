@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'analysis_service.dart';
 import 'activities_boats_service.dart';
 import 'bafu_hydro_service.dart';
+import 'dwd_forecast_service.dart';
 import 'environment_service.dart';
 import 'favorites_service.dart';
 import 'insight_service.dart';
@@ -541,7 +543,9 @@ class _DashboardPageState extends State<DashboardPage> {
 }
 
 class TodayPage extends StatefulWidget {
-  const TodayPage({super.key});
+  const TodayPage({super.key, this.dwdForecastService});
+
+  final DwdForecastService? dwdForecastService;
 
   @override
   State<TodayPage> createState() => _TodayPageState();
@@ -550,17 +554,21 @@ class TodayPage extends StatefulWidget {
 class _TodayPageState extends State<TodayPage> {
   static const _stations = StationSelectionService.stations;
   final _activitiesBoatsService = ActivitiesBoatsService();
+  late final DwdForecastService _dwdForecastService;
   PegelStation _station = PegelOnlineService.konstanz;
   StationSelectionService? _stationSelection;
   late DateTime _selectedDate;
+  Future<DwdMosmixForecast>? _dwdForecast;
   List<String> _selectedActivityIds = const [];
   bool _activitiesLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    _dwdForecastService = widget.dwdForecastService ?? DwdForecastService();
     _selectedDate = _dayOnly(DateTime.now());
     _loadSelectedActivities();
+    _loadDwdForecastForStation();
   }
 
   Future<void> _loadSelectedActivities() async {
@@ -592,6 +600,28 @@ class _TodayPageState extends State<TodayPage> {
     final station = _stationSelection?.currentStation;
     if (station != null && mounted && station.uuid != _station.uuid) {
       setState(() => _station = station);
+      _loadDwdForecastForStation();
+    }
+  }
+
+  void _loadDwdForecastForStation() {
+    if (_station.uuid == PegelOnlineService.konstanz.uuid) {
+      if (_dwdForecast == null) {
+        final future = _dwdForecastService.load();
+        _dwdForecast = future;
+        // A station switch may remove the FutureBuilder before a network
+        // failure arrives. Keep an error listener attached in that case; the
+        // visible Konstanz card still receives the original future and shows
+        // its own unavailable state.
+        unawaited(
+          future.then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stackTrace) {},
+          ),
+        );
+      }
+    } else {
+      _dwdForecast = null;
     }
   }
 
@@ -604,7 +634,10 @@ class _TodayPageState extends State<TodayPage> {
     );
     if (station != null && mounted) {
       _stationSelection?.select(station);
-      if (_stationSelection == null) setState(() => _station = station);
+      if (_stationSelection == null) {
+        setState(() => _station = station);
+        _loadDwdForecastForStation();
+      }
     }
   }
 
@@ -664,7 +697,7 @@ class _TodayPageState extends State<TodayPage> {
                     onSelected: (day) => setState(() => _selectedDate = day),
                   ),
                   const SizedBox(height: 18),
-                  _TodayOverviewCard(date: _selectedDate, station: _station),
+                  _buildTodayOverview(),
                   const SizedBox(height: 20),
                   _TodayActivitiesSection(activities: visibleActivities),
                   const SizedBox(height: 20),
@@ -678,6 +711,69 @@ class _TodayPageState extends State<TodayPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildTodayOverview() {
+    final isKonstanz = _station.uuid == PegelOnlineService.konstanz.uuid;
+    if (!isKonstanz) {
+      return _TodayOverviewCard(
+        date: _selectedDate,
+        station: _station,
+        state: _TodayForecastState.neutral,
+      );
+    }
+    return FutureBuilder<DwdMosmixForecast>(
+      future: _dwdForecast,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return _TodayOverviewCard(
+            date: _selectedDate,
+            station: _station,
+            state: _TodayForecastState.loading,
+          );
+        }
+        final day = snapshot.hasData
+            ? DwdMosmixAggregation.aggregate(snapshot.data!).firstWhere(
+                (candidate) => _dayOnly(candidate.localDate) == _selectedDate,
+                orElse: () => DwdDailyForecast(
+                  localDate: _selectedDate,
+                  points: const [],
+                ),
+              )
+            : null;
+        return Column(
+          children: [
+            _TodayOverviewCard(
+              date: _selectedDate,
+              station: _station,
+              forecast: day,
+              state: snapshot.hasData
+                  ? _TodayForecastState.available
+                  : _TodayForecastState.unavailable,
+            ),
+            const SizedBox(height: 8),
+            const Padding(
+              padding: EdgeInsets.only(left: 4),
+              child: Text(
+                'Prognose: Deutscher Wetterdienst (DWD) · MOSMIX',
+                style: TextStyle(
+                  color: Color(0xFFF8FBFF),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  shadows: [
+                    Shadow(
+                      color: Color(0x9900163A),
+                      blurRadius: 4,
+                      offset: Offset(0, 1),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -785,21 +881,82 @@ class _DayChoiceChip extends StatelessWidget {
   );
 }
 
+enum _TodayForecastState { loading, neutral, unavailable, available }
+
 class _TodayOverviewCard extends StatelessWidget {
-  const _TodayOverviewCard({required this.date, required this.station});
+  const _TodayOverviewCard({
+    required this.date,
+    required this.station,
+    required this.state,
+    this.forecast,
+  });
 
   final DateTime date;
   final PegelStation station;
+  final _TodayForecastState state;
+  final DwdDailyForecast? forecast;
 
-  static const _items = <(IconData, String)>[
-    (Icons.cloud_outlined, 'Wetter'),
-    (Icons.thermostat_rounded, 'Temperatur'),
-    (Icons.water_drop_outlined, 'Niederschlag'),
-    (Icons.air_rounded, 'Wind'),
-    (Icons.speed_rounded, 'Böen'),
-    (Icons.waves_rounded, 'Pegel'),
-    (Icons.warning_amber_rounded, 'Warnungen'),
-  ];
+  bool get _isToday => _dayOnly(date) == _dayOnly(DateTime.now());
+
+  String get _title =>
+      'TAGESÜBERSICHT · ${_longDayLabel(date)}'
+      '${_isToday ? ' · AB JETZT' : ''}';
+
+  String get _pendingLabel => switch (state) {
+    _TodayForecastState.loading => 'Prognosedaten werden geladen',
+    _TodayForecastState.neutral => 'Noch keine Prognosedaten verfügbar',
+    _ => 'Nicht verfügbar',
+  };
+
+  List<(IconData, String, String)> get _items {
+    if (state != _TodayForecastState.available || forecast == null) {
+      return [
+        (Icons.cloud_outlined, 'Wetter', _pendingLabel),
+        (Icons.thermostat_rounded, 'Temperatur', _pendingLabel),
+        (Icons.water_drop_outlined, 'Niederschlag', _pendingLabel),
+        (Icons.air_rounded, 'Wind', _pendingLabel),
+        (Icons.speed_rounded, 'Böen', _pendingLabel),
+        (Icons.waves_rounded, 'Pegel', 'Noch keine Prognosedaten verfügbar'),
+        (
+          Icons.warning_amber_rounded,
+          'Warnungen',
+          'Noch keine Warnungsdaten verfügbar',
+        ),
+      ];
+    }
+    return [
+      (
+        Icons.cloud_outlined,
+        'Wetter',
+        forecast!.weatherLabel ?? 'Nicht verfügbar',
+      ),
+      (
+        Icons.thermostat_rounded,
+        'Temperatur',
+        _temperatureRange(
+          forecast!.temperatureMinimumCelsius,
+          forecast!.temperatureMaximumCelsius,
+        ),
+      ),
+      (
+        Icons.water_drop_outlined,
+        'Niederschlag',
+        _precipitationLabel(forecast!.precipitationMillimeters),
+      ),
+      (Icons.air_rounded, 'Wind', _wind(forecast!)),
+      (
+        Icons.speed_rounded,
+        'Böen',
+        _kilometersPerHour(forecast!.maximumGustKilometersPerHour),
+      ),
+      (Icons.waves_rounded, 'Pegel', 'Noch keine Prognosedaten verfügbar'),
+      (
+        Icons.warning_amber_rounded,
+        'Warnungen',
+        'Noch keine Warnungsdaten verfügbar',
+      ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) => Container(
@@ -810,7 +967,7 @@ class _TodayOverviewCard extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'TAGESÜBERSICHT · ${_longDayLabel(date)}',
+          _title,
           style: const TextStyle(
             color: AppColors.deepBlue,
             fontSize: 16,
@@ -833,7 +990,11 @@ class _TodayOverviewCard extends StatelessWidget {
                   .map(
                     (item) => SizedBox(
                       width: width,
-                      child: _TodayMetric(icon: item.$1, label: item.$2),
+                      child: _TodayMetric(
+                        icon: item.$1,
+                        label: item.$2,
+                        value: item.$3,
+                      ),
                     ),
                   )
                   .toList(),
@@ -843,13 +1004,44 @@ class _TodayOverviewCard extends StatelessWidget {
       ],
     ),
   );
+
+  String _precipitationLabel(double? value) {
+    final label = _millimeters(value);
+    return _isToday && value != null ? '$label · ab jetzt' : label;
+  }
+}
+
+String _temperatureRange(double? minimum, double? maximum) {
+  if (minimum == null || maximum == null) return 'Nicht verfügbar';
+  return '${minimum.round()}–${maximum.round()} °C';
+}
+
+String _millimeters(double? value) => value == null
+    ? 'Nicht verfügbar'
+    : '${value.toStringAsFixed(1).replaceAll('.', ',')} mm';
+
+String _kilometersPerHour(double? value) =>
+    value == null ? 'Nicht verfügbar' : '${value.round()} km/h';
+
+String _wind(DwdDailyForecast forecast) {
+  final speed = _kilometersPerHour(
+    forecast.representativeWindKilometersPerHour,
+  );
+  if (speed == 'Nicht verfügbar') return speed;
+  final direction = forecast.windDirectionAbbreviation;
+  return direction == null ? speed : '$speed · $direction';
 }
 
 class _TodayMetric extends StatelessWidget {
-  const _TodayMetric({required this.icon, required this.label});
+  const _TodayMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
 
   final IconData icon;
   final String label;
+  final String value;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -876,11 +1068,11 @@ class _TodayMetric extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 3),
-              const Text(
-                'Noch keine Prognosedaten verfügbar',
+              Text(
+                value,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
+                style: const TextStyle(
                   color: Color(0xFF71809A),
                   fontSize: 10,
                   height: 1.2,
@@ -1005,43 +1197,59 @@ class _WeeklyPlannerSection extends StatelessWidget {
             style: TextStyle(color: Color(0xFF71809A), fontSize: 12),
           ),
           const SizedBox(height: 10),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Table(
-              defaultColumnWidth: const FixedColumnWidth(52),
-              columnWidths: const {0: FixedColumnWidth(118)},
-              border: TableBorder.all(
-                color: const Color(0xFFE6EDF6),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              children: [
-                TableRow(
-                  decoration: const BoxDecoration(color: Color(0xFFF5F9FF)),
-                  children: [
-                    const _PlannerTableCell(''),
-                    ...days.map(
-                      (day) => _PlannerTableCell(
-                        _shortDayLabel(day, isToday: day == days.first),
-                      ),
-                    ),
-                  ],
+          LayoutBuilder(
+            builder: (context, constraints) {
+              // Keep all seven day columns visible inside the card. The
+              // activity column remains wide enough for the longest current
+              // label; the remaining width is split equally across days.
+              final activityWidth = math.min(
+                116.0,
+                math.max(100.0, constraints.maxWidth * .34),
+              );
+              final dayWidth =
+                  (constraints.maxWidth - activityWidth) / days.length;
+              return Table(
+                key: const ValueKey('weekly-planner-table'),
+                defaultColumnWidth: const FixedColumnWidth(52),
+                columnWidths: {
+                  0: FixedColumnWidth(activityWidth),
+                  for (var index = 1; index <= days.length; index++)
+                    index: FixedColumnWidth(dayWidth),
+                },
+                border: TableBorder.all(
+                  color: const Color(0xFFE6EDF6),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                ...activities.map(
-                  (activity) => TableRow(
+                children: [
+                  TableRow(
+                    decoration: const BoxDecoration(color: Color(0xFFF5F9FF)),
                     children: [
-                      KeyedSubtree(
-                        key: ValueKey('weekly-activity-${activity.id}'),
-                        child: _PlannerTableCell(
-                          activity.label,
-                          alignLeft: true,
+                      const _PlannerTableCell(''),
+                      ...days.map(
+                        (day) => _PlannerTableCell(
+                          _shortDayLabel(day, isToday: day == days.first),
+                          isDayHeader: true,
                         ),
                       ),
-                      ...days.map((_) => const _PlannerTableCell('–')),
                     ],
                   ),
-                ),
-              ],
-            ),
+                  ...activities.map(
+                    (activity) => TableRow(
+                      children: [
+                        KeyedSubtree(
+                          key: ValueKey('weekly-activity-${activity.id}'),
+                          child: _PlannerTableCell(
+                            activity.label,
+                            alignLeft: true,
+                          ),
+                        ),
+                        ...days.map((_) => const _PlannerTableCell('–')),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -1050,10 +1258,15 @@ class _WeeklyPlannerSection extends StatelessWidget {
 }
 
 class _PlannerTableCell extends StatelessWidget {
-  const _PlannerTableCell(this.text, {this.alignLeft = false});
+  const _PlannerTableCell(
+    this.text, {
+    this.alignLeft = false,
+    this.isDayHeader = false,
+  });
 
   final String text;
   final bool alignLeft;
+  final bool isDayHeader;
 
   @override
   Widget build(BuildContext context) => SizedBox(
@@ -1061,17 +1274,30 @@ class _PlannerTableCell extends StatelessWidget {
     child: Align(
       alignment: alignLeft ? Alignment.centerLeft : Alignment.center,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 5),
-        child: Text(
-          text,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: Color(0xFF64738D),
-            fontSize: alignLeft ? 11 : 9,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
+        padding: EdgeInsets.symmetric(horizontal: isDayHeader ? 1 : 4),
+        child: isDayHeader
+            ? FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  text,
+                  maxLines: 1,
+                  style: const TextStyle(
+                    color: Color(0xFF64738D),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              )
+            : Text(
+                text,
+                maxLines: alignLeft ? 2 : 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: const Color(0xFF64738D),
+                  fontSize: alignLeft ? 10 : 9,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
       ),
     ),
   );

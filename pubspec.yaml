@@ -31,6 +31,9 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.6.0
+  archive: ^4.0.7
+  xml: ^6.5.0
+  timezone: ^0.10.1
   shared_preferences: ^2.5.5
   flutter_map: ^8.3.2
   latlong2: ^0.9.1

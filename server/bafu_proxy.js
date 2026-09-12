@@ -25,6 +25,9 @@ const dwdKonstanzTemperatureUrl =
   'https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/now/10minutenwerte_TU_02712_now.zip';
 const dwdKonstanzWindUrl =
   'https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/wind/now/10minutenwerte_wind_02712_now.zip';
+const dwdMosmixKonstanzRoute = '/api/dwd/mosmix/konstanz';
+const dwdMosmixKonstanzSourceUrl =
+  'https://opendata.dwd.de/weather/local_forecasts/mos/MOSMIX_L/single_stations/10929/kml/MOSMIX_L_LATEST_10929.kmz';
 const meteoSwissGuettingenUrl =
   'https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/gut/ogd-smn_gut_t_now.csv';
 
@@ -155,6 +158,25 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === dwdMosmixKonstanzRoute) {
+      const sourceResponse = await fetch(dwdMosmixKonstanzSourceUrl, {
+        headers: { Accept: 'application/vnd.google-earth.kmz, application/zip, */*' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!sourceResponse.ok) {
+        throw new Error(`DWD MOSMIX responded with HTTP ${sourceResponse.status}.`);
+      }
+      const kmz = Buffer.from(await sourceResponse.arrayBuffer());
+      response.writeHead(200, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Content-Type': 'application/vnd.google-earth.kmz',
+        'Cache-Control': 'no-store',
+      });
+      response.end(kmz);
+      return;
+    }
+
     if (requestUrl.pathname === vorarlbergAnnualRoute) {
       const sourceResponse = await fetch(vorarlbergAnnualSourceUrl, {
         headers: { Accept: 'application/json' },
@@ -272,6 +294,7 @@ const server = http.createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`BAFU history proxy listening on http://127.0.0.1:${port}${bafuHistoryRoute}`);
   console.log(`BAFU forecast proxy listening on http://127.0.0.1:${port}${bafuForecastRoute}`);
+  console.log(`DWD MOSMIX proxy listening on http://127.0.0.1:${port}${dwdMosmixKonstanzRoute}`);
   console.log(`Vorarlberg live proxy listening on http://127.0.0.1:${port}${vorarlbergLiveRoute}`);
   console.log(`Environment proxy listening on http://127.0.0.1:${port}/api/environment/{stationUuid}`);
 });
