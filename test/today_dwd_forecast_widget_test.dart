@@ -4,9 +4,11 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:bodensee_pegel/bafu_hydro_service.dart';
 import 'package:bodensee_pegel/dwd_forecast_service.dart';
+import 'package:bodensee_pegel/environment_service.dart';
 import 'package:bodensee_pegel/geosphere_forecast_service.dart';
 import 'package:bodensee_pegel/main.dart';
 import 'package:bodensee_pegel/meteoswiss_forecast_service.dart';
+import 'package:bodensee_pegel/pegelonline_service.dart';
 import 'package:bodensee_pegel/station_selection_service.dart';
 import 'package:bodensee_pegel/vorarlberg_hydro_service.dart';
 import 'package:flutter/material.dart';
@@ -194,6 +196,40 @@ void main() {
     expect(find.text('Nicht verfügbar'), findsWidgets);
   });
 
+  testWidgets('Bregenz passes local water temperature only to today ratings', (
+    tester,
+  ) async {
+    final now = DateTime.now().toUtc();
+    final service = GeoSphereForecastService(
+      client: MockClient(
+        (_) async => http.Response(
+          jsonEncode(_geoSphereForecastPayload(now, firstTemperature: 22)),
+          200,
+        ),
+      ),
+    );
+    final selection = StationSelectionService()
+      ..select(VorarlbergHydroService.bregenz, persistLast: false);
+    await tester.pumpWidget(
+      _scopedToday(
+        station: selection,
+        service: DwdForecastService(),
+        geoSphereService: service,
+        environmentLoader: (_) async =>
+            const StationEnvironmentData(waterTemperatureC: 20),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('22 °C Luft · 20 °C Wasser'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('today-day-1')));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Wassertemperatur nicht verfügbar'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('missing MOSMIX values and Bregenz remain neutral', (
     tester,
   ) async {
@@ -222,6 +258,38 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets(
+    'Today derives activity ratings and weekly cells from forecasts',
+    (tester) async {
+      final service = DwdForecastService(
+        client: MockClient(
+          (_) async => http.Response.bytes(
+            _kmz(_forecastKml(DateTime.now().toUtc())),
+            200,
+          ),
+        ),
+      );
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _scopedToday(station: StationSelectionService(), service: service),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Noch keine Bewertung'), findsNothing);
+      expect(find.text('Freizeit-Eignung aus Tagesprognosen'), findsOneWidget);
+      expect(find.text('Sehr gut'), findsWidgets);
+      expect(
+        find.byKey(const ValueKey('today-activity-sup_kajak')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('weekly-planner-table')),
+        findsOneWidget,
+      );
+    },
+  );
 }
 
 Widget _scopedToday({
@@ -230,6 +298,7 @@ Widget _scopedToday({
   MeteoSwissForecastService? meteoSwissService,
   GeoSphereForecastService? geoSphereService,
   Future<BafuForecastData> Function()? bafuForecastLoader,
+  Future<StationEnvironmentData> Function(PegelStation)? environmentLoader,
 }) => StationSelectionScope(
   notifier: station,
   child: MaterialApp(
@@ -238,6 +307,7 @@ Widget _scopedToday({
       meteoSwissForecastService: meteoSwissService,
       geoSphereForecastService: geoSphereService,
       bafuForecastLoader: bafuForecastLoader,
+      environmentLoader: environmentLoader,
     ),
   ),
 );
@@ -274,7 +344,10 @@ Map<String, dynamic> _meteoswissForecastPayload(DateTime now) {
   };
 }
 
-Map<String, dynamic> _geoSphereForecastPayload(DateTime now) {
+Map<String, dynamic> _geoSphereForecastPayload(
+  DateTime now, {
+  double firstTemperature = 10,
+}) {
   final first = now.add(const Duration(minutes: 10));
   final second = first.add(const Duration(days: 1));
   List<Object?> values(Object? firstValue, Object? secondValue) => [
@@ -297,7 +370,11 @@ Map<String, dynamic> _geoSphereForecastPayload(DateTime now) {
         },
         'properties': {
           'parameters': {
-            '2t': parameter('2m temperature', 'degree Celsius', values(10, 20)),
+            '2t': parameter(
+              '2m temperature',
+              'degree Celsius',
+              values(firstTemperature, 20),
+            ),
             '10u': parameter('eastward wind', 'm s-1', values(0, 0)),
             '10v': parameter('northward wind', 'm s-1', values(-2, -2)),
             '10fg': parameter('gust', 'm s-1', values(4, 5)),

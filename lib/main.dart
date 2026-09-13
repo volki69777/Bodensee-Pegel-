@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'analysis_service.dart';
+import 'activity_rating_service.dart';
 import 'activities_boats_service.dart';
 import 'bafu_hydro_service.dart';
 import 'dwd_forecast_service.dart';
@@ -643,12 +644,15 @@ class TodayPage extends StatefulWidget {
     this.meteoSwissForecastService,
     this.geoSphereForecastService,
     this.bafuForecastLoader,
+    this.environmentLoader,
   });
 
   final DwdForecastService? dwdForecastService;
   final MeteoSwissForecastService? meteoSwissForecastService;
   final GeoSphereForecastService? geoSphereForecastService;
   final Future<BafuForecastData> Function()? bafuForecastLoader;
+  final Future<StationEnvironmentData> Function(PegelStation)?
+  environmentLoader;
 
   @override
   State<TodayPage> createState() => _TodayPageState();
@@ -661,6 +665,8 @@ class _TodayPageState extends State<TodayPage> {
   late final MeteoSwissForecastService _meteoSwissForecastService;
   late final GeoSphereForecastService _geoSphereForecastService;
   late final Future<BafuForecastData> Function() _bafuForecastLoader;
+  late final Future<StationEnvironmentData> Function(PegelStation)
+  _environmentLoader;
   PegelStation _station = PegelOnlineService.konstanz;
   StationSelectionService? _stationSelection;
   late DateTime _selectedDate;
@@ -668,6 +674,7 @@ class _TodayPageState extends State<TodayPage> {
   Future<MeteoSwissForecast>? _meteoSwissForecast;
   Future<GeoSphereForecast>? _geoSphereForecast;
   Future<BafuForecastData>? _bafuForecast;
+  Future<StationEnvironmentData>? _bregenzEnvironment;
   List<String> _selectedActivityIds = const [];
   bool _activitiesLoaded = false;
 
@@ -681,6 +688,8 @@ class _TodayPageState extends State<TodayPage> {
         widget.geoSphereForecastService ?? GeoSphereForecastService();
     _bafuForecastLoader =
         widget.bafuForecastLoader ?? BafuHydroService().fetchRomanshornForecast;
+    _environmentLoader =
+        widget.environmentLoader ?? EnvironmentService().fetchFor;
     _selectedDate = _dayOnly(DateTime.now());
     _loadSelectedActivities();
     _loadForecastForStation();
@@ -742,6 +751,7 @@ class _TodayPageState extends State<TodayPage> {
       _meteoSwissForecast = null;
       _bafuForecast = null;
       _geoSphereForecast = null;
+      _bregenzEnvironment = null;
     } else if (_station.uuid == BafuHydroService.romanshorn.uuid) {
       if (_meteoSwissForecast == null) {
         final future = _meteoSwissForecastService.load();
@@ -757,6 +767,7 @@ class _TodayPageState extends State<TodayPage> {
       }
       _dwdForecast = null;
       _geoSphereForecast = null;
+      _bregenzEnvironment = null;
       if (_bafuForecast == null) {
         final future = _bafuForecastLoader();
         _bafuForecast = future;
@@ -779,6 +790,13 @@ class _TodayPageState extends State<TodayPage> {
             (_) {},
             onError: (Object error, StackTrace stackTrace) {},
           ),
+        );
+      }
+      if (_bregenzEnvironment == null) {
+        final future = _environmentLoader(VorarlbergHydroService.bregenz);
+        _bregenzEnvironment = future;
+        unawaited(
+          future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
         );
       }
     }
@@ -858,12 +876,7 @@ class _TodayPageState extends State<TodayPage> {
                   const SizedBox(height: 18),
                   _buildTodayOverview(),
                   const SizedBox(height: 20),
-                  _TodayActivitiesSection(activities: visibleActivities),
-                  const SizedBox(height: 20),
-                  _WeeklyPlannerSection(
-                    days: days,
-                    activities: visibleActivities,
-                  ),
+                  _buildActivityPlanner(days, visibleActivities),
                 ],
               ),
             ),
@@ -999,6 +1012,114 @@ class _TodayPageState extends State<TodayPage> {
       },
     );
   }
+
+  Widget _buildActivityPlanner(
+    List<DateTime> days,
+    List<_PlannerActivity> activities,
+  ) {
+    if (_station.uuid == PegelOnlineService.konstanz.uuid) {
+      return FutureBuilder<DwdMosmixForecast>(
+        future: _dwdForecast,
+        builder: (context, snapshot) => _activityPlannerContent(
+          days: days,
+          activities: activities,
+          forecasts: snapshot.hasData
+              ? DwdMosmixAggregation.aggregate(snapshot.data!)
+                    .map(_TodayForecastValues.fromDwd)
+                    .toList(growable: false)
+              : const [],
+        ),
+      );
+    }
+    if (_station.uuid == BafuHydroService.romanshorn.uuid) {
+      return FutureBuilder<MeteoSwissForecast>(
+        future: _meteoSwissForecast,
+        builder: (context, snapshot) => _activityPlannerContent(
+          days: days,
+          activities: activities,
+          forecasts: snapshot.hasData
+              ? MeteoSwissForecastAggregation.aggregate(snapshot.data!)
+                    .map(_TodayForecastValues.fromMeteoSwiss)
+                    .toList(growable: false)
+              : const [],
+        ),
+      );
+    }
+    return FutureBuilder<GeoSphereForecast>(
+      future: _geoSphereForecast,
+      builder: (context, snapshot) => FutureBuilder<StationEnvironmentData>(
+        future: _bregenzEnvironment,
+        builder: (context, environmentSnapshot) => _activityPlannerContent(
+          days: days,
+          activities: activities,
+          forecasts: snapshot.hasData
+              ? GeoSphereForecastAggregation.aggregate(snapshot.data!)
+                    .map(_TodayForecastValues.fromGeoSphere)
+                    .toList(growable: false)
+              : const [],
+          bregenzWaterTemperatureToday:
+              environmentSnapshot.hasData && !environmentSnapshot.hasError
+              ? environmentSnapshot.data!.waterTemperatureC
+              : null,
+        ),
+      ),
+    );
+  }
+
+  Widget _activityPlannerContent({
+    required List<DateTime> days,
+    required List<_PlannerActivity> activities,
+    required List<_TodayForecastValues> forecasts,
+    double? bregenzWaterTemperatureToday,
+  }) {
+    final forecastsByDay = <DateTime, _TodayForecastValues>{
+      for (final forecast in forecasts)
+        if (forecast.localDate != null) _dayOnly(forecast.localDate!): forecast,
+    };
+    final ratingsByDay = <DateTime, Map<String, ActivityRating>>{
+      for (final day in days)
+        day: {
+          for (final activity in activities)
+            activity.id: ActivityRatingService.rate(
+              activityId: activity.id,
+              data: _activityForecastData(
+                forecastsByDay[day],
+                waterTemperatureCelsius:
+                    _station.uuid == VorarlbergHydroService.bregenz.uuid &&
+                        day == _dayOnly(DateTime.now())
+                    ? bregenzWaterTemperatureToday
+                    : null,
+              ),
+            ),
+        },
+    };
+    return Column(
+      children: [
+        _TodayActivitiesSection(
+          activities: activities,
+          ratings: ratingsByDay[_selectedDate] ?? const {},
+        ),
+        const SizedBox(height: 20),
+        _WeeklyPlannerSection(
+          days: days,
+          activities: activities,
+          ratingsByDay: ratingsByDay,
+        ),
+      ],
+    );
+  }
+
+  ActivityForecastData _activityForecastData(
+    _TodayForecastValues? forecast, {
+    double? waterTemperatureCelsius,
+  }) => ActivityForecastData(
+    temperatureMinimumCelsius: forecast?.temperatureMinimumCelsius,
+    temperatureMaximumCelsius: forecast?.temperatureMaximumCelsius,
+    precipitationMillimeters: forecast?.precipitationMillimeters,
+    windKilometersPerHour: forecast?.representativeWindKilometersPerHour,
+    gustKilometersPerHour: forecast?.maximumGustKilometersPerHour,
+    waterTemperatureCelsius: waterTemperatureCelsius,
+  );
 }
 
 DateTime _dayOnly(DateTime value) =>
@@ -1108,6 +1229,7 @@ enum _TodayForecastState { loading, neutral, unavailable, available }
 
 class _TodayForecastValues {
   const _TodayForecastValues({
+    this.localDate,
     this.temperatureMinimumCelsius,
     this.temperatureMaximumCelsius,
     this.precipitationMillimeters,
@@ -1119,6 +1241,7 @@ class _TodayForecastValues {
 
   factory _TodayForecastValues.fromDwd(DwdDailyForecast forecast) =>
       _TodayForecastValues(
+        localDate: forecast.localDate,
         temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
         temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
         precipitationMillimeters: forecast.precipitationMillimeters,
@@ -1132,6 +1255,7 @@ class _TodayForecastValues {
   factory _TodayForecastValues.fromMeteoSwiss(
     MeteoSwissDailyForecast forecast,
   ) => _TodayForecastValues(
+    localDate: forecast.localDate,
     temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
     temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
     precipitationMillimeters: forecast.precipitationMillimeters,
@@ -1144,6 +1268,7 @@ class _TodayForecastValues {
 
   factory _TodayForecastValues.fromGeoSphere(GeoSphereDailyForecast forecast) =>
       _TodayForecastValues(
+        localDate: forecast.localDate,
         temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
         temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
         precipitationMillimeters: forecast.precipitationMillimeters,
@@ -1154,6 +1279,7 @@ class _TodayForecastValues {
         weatherLabel: forecast.weatherLabel,
       );
 
+  final DateTime? localDate;
   final double? temperatureMinimumCelsius;
   final double? temperatureMaximumCelsius;
   final double? precipitationMillimeters;
@@ -1528,9 +1654,13 @@ const plannerActivities = <_PlannerActivity>[
 ];
 
 class _TodayActivitiesSection extends StatelessWidget {
-  const _TodayActivitiesSection({required this.activities});
+  const _TodayActivitiesSection({
+    required this.activities,
+    required this.ratings,
+  });
 
   final List<_PlannerActivity> activities;
+  final Map<String, ActivityRating> ratings;
 
   @override
   Widget build(BuildContext context) => _MoreSection(
@@ -1540,7 +1670,15 @@ class _TodayActivitiesSection extends StatelessWidget {
       child: Column(
         children: [
           for (var index = 0; index < activities.length; index++) ...[
-            _TodayActivityRow(activity: activities[index]),
+            _TodayActivityRow(
+              activity: activities[index],
+              rating:
+                  ratings[activities[index].id] ??
+                  const ActivityRating(
+                    ActivityRatingLevel.unavailable,
+                    'Nicht genügend Wetterdaten verfügbar',
+                  ),
+            ),
             if (index < activities.length - 1)
               const Divider(height: 1, color: Color(0xFFEAF0F7)),
           ],
@@ -1551,14 +1689,15 @@ class _TodayActivitiesSection extends StatelessWidget {
 }
 
 class _TodayActivityRow extends StatelessWidget {
-  const _TodayActivityRow({required this.activity});
+  const _TodayActivityRow({required this.activity, required this.rating});
 
   final _PlannerActivity activity;
+  final ActivityRating rating;
 
   @override
   Widget build(BuildContext context) => SizedBox(
     key: ValueKey('today-activity-${activity.id}'),
-    height: 47,
+    height: 54,
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -1583,14 +1722,35 @@ class _TodayActivityRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            const Expanded(
+            Expanded(
               flex: 5,
-              child: Text(
-                'Noch keine Bewertung',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.right,
-                style: TextStyle(color: Color(0xFF71809A), fontSize: 11),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    rating.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      color: _ratingColor(rating.level),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 1),
+                  Text(
+                    rating.reason,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                      color: Color(0xFF71809A),
+                      fontSize: 9,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1601,10 +1761,15 @@ class _TodayActivityRow extends StatelessWidget {
 }
 
 class _WeeklyPlannerSection extends StatelessWidget {
-  const _WeeklyPlannerSection({required this.days, required this.activities});
+  const _WeeklyPlannerSection({
+    required this.days,
+    required this.activities,
+    required this.ratingsByDay,
+  });
 
   final List<DateTime> days;
   final List<_PlannerActivity> activities;
+  final Map<DateTime, Map<String, ActivityRating>> ratingsByDay;
 
   @override
   Widget build(BuildContext context) => _MoreSection(
@@ -1615,7 +1780,7 @@ class _WeeklyPlannerSection extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Noch keine Bewertung',
+            'Freizeit-Eignung aus Tagesprognosen',
             style: TextStyle(color: Color(0xFF71809A), fontSize: 12),
           ),
           const SizedBox(height: 10),
@@ -1665,7 +1830,15 @@ class _WeeklyPlannerSection extends StatelessWidget {
                             alignLeft: true,
                           ),
                         ),
-                        ...days.map((_) => const _PlannerTableCell('–')),
+                        ...days.map(
+                          (day) => _PlannerRatingCell(
+                            ratingsByDay[day]?[activity.id] ??
+                                const ActivityRating(
+                                  ActivityRatingLevel.unavailable,
+                                  'Nicht genügend Wetterdaten verfügbar',
+                                ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1674,6 +1847,39 @@ class _WeeklyPlannerSection extends StatelessWidget {
             },
           ),
         ],
+      ),
+    ),
+  );
+}
+
+Color _ratingColor(ActivityRatingLevel level) => switch (level) {
+  ActivityRatingLevel.veryGood => AppColors.blue,
+  ActivityRatingLevel.good => AppColors.deepBlue,
+  ActivityRatingLevel.limited => const Color(0xFF59718E),
+  ActivityRatingLevel.unsuitable => const Color(0xFF425B78),
+  ActivityRatingLevel.unavailable => const Color(0xFF71809A),
+};
+
+class _PlannerRatingCell extends StatelessWidget {
+  const _PlannerRatingCell(this.rating);
+
+  final ActivityRating rating;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 36,
+    child: Center(
+      child: Tooltip(
+        message: '${rating.label}: ${rating.reason}',
+        child: Text(
+          rating.shortLabel,
+          maxLines: 1,
+          style: TextStyle(
+            color: _ratingColor(rating.level),
+            fontSize: 9,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
       ),
     ),
   );
