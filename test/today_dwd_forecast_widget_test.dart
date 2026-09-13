@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:bodensee_pegel/bafu_hydro_service.dart';
 import 'package:bodensee_pegel/dwd_forecast_service.dart';
+import 'package:bodensee_pegel/geosphere_forecast_service.dart';
 import 'package:bodensee_pegel/main.dart';
 import 'package:bodensee_pegel/meteoswiss_forecast_service.dart';
 import 'package:bodensee_pegel/station_selection_service.dart';
@@ -154,6 +155,45 @@ void main() {
     expect(find.text('Nicht verfügbar'), findsWidgets);
   });
 
+  testWidgets('Bregenz renders GeoSphere data and keeps its short horizon', (
+    tester,
+  ) async {
+    final now = DateTime.now().toUtc();
+    final service = GeoSphereForecastService(
+      client: MockClient(
+        (_) async =>
+            http.Response(jsonEncode(_geoSphereForecastPayload(now)), 200),
+      ),
+    );
+    final selection = StationSelectionService()
+      ..select(VorarlbergHydroService.bregenz, persistLast: false);
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _scopedToday(
+        station: selection,
+        service: DwdForecastService(),
+        geoSphereService: service,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Prognose: GeoSphere Austria'), findsOneWidget);
+    expect(find.text('10–10 °C'), findsOneWidget);
+    expect(find.text('0,2 mm'), findsOneWidget);
+    expect(find.text('7 km/h · N'), findsOneWidget);
+    expect(find.text('14 km/h'), findsOneWidget);
+    expect(find.text('Nicht verfügbar'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('today-day-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('20–20 °C'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('today-day-6')));
+    await tester.pumpAndSettle();
+    expect(find.text('Nicht verfügbar'), findsWidgets);
+  });
+
   testWidgets('missing MOSMIX values and Bregenz remain neutral', (
     tester,
   ) async {
@@ -188,6 +228,7 @@ Widget _scopedToday({
   required StationSelectionService station,
   required DwdForecastService service,
   MeteoSwissForecastService? meteoSwissService,
+  GeoSphereForecastService? geoSphereService,
   Future<BafuForecastData> Function()? bafuForecastLoader,
 }) => StationSelectionScope(
   notifier: station,
@@ -195,6 +236,7 @@ Widget _scopedToday({
     home: TodayPage(
       dwdForecastService: service,
       meteoSwissForecastService: meteoSwissService,
+      geoSphereForecastService: geoSphereService,
       bafuForecastLoader: bafuForecastLoader,
     ),
   ),
@@ -229,6 +271,43 @@ Map<String, dynamic> _meteoswissForecastPayload(DateTime now) {
     'updatedAtUtc': now.toIso8601String(),
     'runAtUtc': now.toIso8601String(),
     'points': [point(first, 10, .2), point(second, 20, 1.5)],
+  };
+}
+
+Map<String, dynamic> _geoSphereForecastPayload(DateTime now) {
+  final first = now.add(const Duration(minutes: 10));
+  final second = first.add(const Duration(days: 1));
+  List<Object?> values(Object? firstValue, Object? secondValue) => [
+    firstValue,
+    secondValue,
+  ];
+  Map<String, dynamic> parameter(
+    String name,
+    String unit,
+    List<Object?> data,
+  ) => {'name': name, 'unit': unit, 'data': data};
+  return {
+    'reference_time': now.toIso8601String(),
+    'timestamps': [first.toIso8601String(), second.toIso8601String()],
+    'features': [
+      {
+        'geometry': {
+          'type': 'Point',
+          'coordinates': [9.7432, 47.502],
+        },
+        'properties': {
+          'parameters': {
+            '2t': parameter('2m temperature', 'degree Celsius', values(10, 20)),
+            '10u': parameter('eastward wind', 'm s-1', values(0, 0)),
+            '10v': parameter('northward wind', 'm s-1', values(-2, -2)),
+            '10fg': parameter('gust', 'm s-1', values(4, 5)),
+            'tp': parameter('precipitation', 'kg m-2', values(.2, 1.5)),
+            'sy': parameter('weather symbol', '1', values(7, 7)),
+            'tcc': parameter('cloud cover', '%', values(20, 20)),
+          },
+        },
+      },
+    ],
   };
 }
 

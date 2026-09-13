@@ -14,6 +14,7 @@ import 'bafu_hydro_service.dart';
 import 'dwd_forecast_service.dart';
 import 'environment_service.dart';
 import 'favorites_service.dart';
+import 'geosphere_forecast_service.dart';
 import 'insight_service.dart';
 import 'map_configuration.dart';
 import 'meteoswiss_forecast_service.dart';
@@ -548,11 +549,13 @@ class TodayPage extends StatefulWidget {
     super.key,
     this.dwdForecastService,
     this.meteoSwissForecastService,
+    this.geoSphereForecastService,
     this.bafuForecastLoader,
   });
 
   final DwdForecastService? dwdForecastService;
   final MeteoSwissForecastService? meteoSwissForecastService;
+  final GeoSphereForecastService? geoSphereForecastService;
   final Future<BafuForecastData> Function()? bafuForecastLoader;
 
   @override
@@ -564,12 +567,14 @@ class _TodayPageState extends State<TodayPage> {
   final _activitiesBoatsService = ActivitiesBoatsService();
   late final DwdForecastService _dwdForecastService;
   late final MeteoSwissForecastService _meteoSwissForecastService;
+  late final GeoSphereForecastService _geoSphereForecastService;
   late final Future<BafuForecastData> Function() _bafuForecastLoader;
   PegelStation _station = PegelOnlineService.konstanz;
   StationSelectionService? _stationSelection;
   late DateTime _selectedDate;
   Future<DwdMosmixForecast>? _dwdForecast;
   Future<MeteoSwissForecast>? _meteoSwissForecast;
+  Future<GeoSphereForecast>? _geoSphereForecast;
   Future<BafuForecastData>? _bafuForecast;
   List<String> _selectedActivityIds = const [];
   bool _activitiesLoaded = false;
@@ -580,6 +585,8 @@ class _TodayPageState extends State<TodayPage> {
     _dwdForecastService = widget.dwdForecastService ?? DwdForecastService();
     _meteoSwissForecastService =
         widget.meteoSwissForecastService ?? MeteoSwissForecastService();
+    _geoSphereForecastService =
+        widget.geoSphereForecastService ?? GeoSphereForecastService();
     _bafuForecastLoader =
         widget.bafuForecastLoader ?? BafuHydroService().fetchRomanshornForecast;
     _selectedDate = _dayOnly(DateTime.now());
@@ -642,6 +649,7 @@ class _TodayPageState extends State<TodayPage> {
       }
       _meteoSwissForecast = null;
       _bafuForecast = null;
+      _geoSphereForecast = null;
     } else if (_station.uuid == BafuHydroService.romanshorn.uuid) {
       if (_meteoSwissForecast == null) {
         final future = _meteoSwissForecastService.load();
@@ -656,6 +664,7 @@ class _TodayPageState extends State<TodayPage> {
         );
       }
       _dwdForecast = null;
+      _geoSphereForecast = null;
       if (_bafuForecast == null) {
         final future = _bafuForecastLoader();
         _bafuForecast = future;
@@ -670,6 +679,16 @@ class _TodayPageState extends State<TodayPage> {
       _dwdForecast = null;
       _meteoSwissForecast = null;
       _bafuForecast = null;
+      if (_geoSphereForecast == null) {
+        final future = _geoSphereForecastService.load();
+        _geoSphereForecast = future;
+        unawaited(
+          future.then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stackTrace) {},
+          ),
+        );
+      }
     }
   }
 
@@ -765,13 +784,6 @@ class _TodayPageState extends State<TodayPage> {
   Widget _buildTodayOverview() {
     final isKonstanz = _station.uuid == PegelOnlineService.konstanz.uuid;
     final isRomanshorn = _station.uuid == BafuHydroService.romanshorn.uuid;
-    if (!isKonstanz && !isRomanshorn) {
-      return _TodayOverviewCard(
-        date: _selectedDate,
-        station: _station,
-        state: _TodayForecastState.neutral,
-      );
-    }
     if (isKonstanz) {
       return FutureBuilder<DwdMosmixForecast>(
         future: _dwdForecast,
@@ -806,8 +818,62 @@ class _TodayPageState extends State<TodayPage> {
         },
       );
     }
-    return FutureBuilder<MeteoSwissForecast>(
-      future: _meteoSwissForecast,
+    if (isRomanshorn) {
+      return FutureBuilder<MeteoSwissForecast>(
+        future: _meteoSwissForecast,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return _TodayOverviewCard(
+              date: _selectedDate,
+              station: _station,
+              state: _TodayForecastState.loading,
+            );
+          }
+          final day = snapshot.hasData
+              ? MeteoSwissForecastAggregation.aggregate(snapshot.data!)
+                    .firstWhere(
+                      (candidate) =>
+                          _dayOnly(candidate.localDate) == _selectedDate,
+                      orElse: () => MeteoSwissDailyForecast(
+                        localDate: _selectedDate,
+                        points: const [],
+                      ),
+                    )
+              : null;
+          return FutureBuilder<BafuForecastData>(
+            future: _bafuForecast,
+            builder: (context, bafuSnapshot) {
+              final point = bafuSnapshot.hasData
+                  ? BafuForecastDaySelection.representativePoint(
+                      forecast: bafuSnapshot.data!,
+                      localDate: _selectedDate,
+                    )
+                  : null;
+              return _ForecastOverviewWithSource(
+                card: _TodayOverviewCard(
+                  date: _selectedDate,
+                  station: _station,
+                  forecast: day == null
+                      ? null
+                      : _TodayForecastValues.fromMeteoSwiss(day),
+                  state: snapshot.hasData
+                      ? _TodayForecastState.available
+                      : _TodayForecastState.unavailable,
+                  waterLevelForecast: point == null
+                      ? null
+                      : _TodayWaterLevelForecast.fromBafu(point),
+                  waterLevelForecastLoading:
+                      bafuSnapshot.connectionState != ConnectionState.done,
+                ),
+                source: 'Prognose: MeteoSwiss',
+              );
+            },
+          );
+        },
+      );
+    }
+    return FutureBuilder<GeoSphereForecast>(
+      future: _geoSphereForecast,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return _TodayOverviewCard(
@@ -817,44 +883,26 @@ class _TodayPageState extends State<TodayPage> {
           );
         }
         final day = snapshot.hasData
-            ? MeteoSwissForecastAggregation.aggregate(snapshot.data!)
-                  .firstWhere(
-                    (candidate) =>
-                        _dayOnly(candidate.localDate) == _selectedDate,
-                    orElse: () => MeteoSwissDailyForecast(
-                      localDate: _selectedDate,
-                      points: const [],
-                    ),
-                  )
+            ? GeoSphereForecastAggregation.aggregate(snapshot.data!).firstWhere(
+                (candidate) => _dayOnly(candidate.localDate) == _selectedDate,
+                orElse: () => GeoSphereDailyForecast(
+                  localDate: _selectedDate,
+                  points: const [],
+                ),
+              )
             : null;
-        return FutureBuilder<BafuForecastData>(
-          future: _bafuForecast,
-          builder: (context, bafuSnapshot) {
-            final point = bafuSnapshot.hasData
-                ? BafuForecastDaySelection.representativePoint(
-                    forecast: bafuSnapshot.data!,
-                    localDate: _selectedDate,
-                  )
-                : null;
-            return _ForecastOverviewWithSource(
-              card: _TodayOverviewCard(
-                date: _selectedDate,
-                station: _station,
-                forecast: day == null
-                    ? null
-                    : _TodayForecastValues.fromMeteoSwiss(day),
-                state: snapshot.hasData
-                    ? _TodayForecastState.available
-                    : _TodayForecastState.unavailable,
-                waterLevelForecast: point == null
-                    ? null
-                    : _TodayWaterLevelForecast.fromBafu(point),
-                waterLevelForecastLoading:
-                    bafuSnapshot.connectionState != ConnectionState.done,
-              ),
-              source: 'Prognose: MeteoSwiss',
-            );
-          },
+        return _ForecastOverviewWithSource(
+          card: _TodayOverviewCard(
+            date: _selectedDate,
+            station: _station,
+            forecast: day == null
+                ? null
+                : _TodayForecastValues.fromGeoSphere(day),
+            state: snapshot.hasData
+                ? _TodayForecastState.available
+                : _TodayForecastState.unavailable,
+          ),
+          source: 'Prognose: GeoSphere Austria',
         );
       },
     );
@@ -1001,6 +1049,18 @@ class _TodayForecastValues {
     windDirectionAbbreviation: forecast.windDirectionAbbreviation,
     weatherLabel: forecast.weatherLabel,
   );
+
+  factory _TodayForecastValues.fromGeoSphere(GeoSphereDailyForecast forecast) =>
+      _TodayForecastValues(
+        temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
+        temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
+        precipitationMillimeters: forecast.precipitationMillimeters,
+        representativeWindKilometersPerHour:
+            forecast.representativeWindKilometersPerHour,
+        maximumGustKilometersPerHour: forecast.maximumGustKilometersPerHour,
+        windDirectionAbbreviation: forecast.windDirectionAbbreviation,
+        weatherLabel: forecast.weatherLabel,
+      );
 
   final double? temperatureMinimumCelsius;
   final double? temperatureMaximumCelsius;
