@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import 'package:package_info_plus/package_info_plus.dart';
@@ -84,7 +86,9 @@ class StationLiveData {
 }
 
 class BodenseePegelApp extends StatefulWidget {
-  const BodenseePegelApp({super.key});
+  const BodenseePegelApp({super.key, this.navigatorObservers = const []});
+
+  final List<NavigatorObserver> navigatorObservers;
 
   @override
   State<BodenseePegelApp> createState() => _BodenseePegelAppState();
@@ -117,7 +121,19 @@ class _BodenseePegelAppState extends State<BodenseePegelApp> {
         scaffoldBackgroundColor: AppColors.mist,
         textTheme: ThemeData.light().textTheme.apply(fontFamily: 'Roboto'),
       ),
-      home: const DashboardPage(),
+      onGenerateInitialRoutes: (initialRouteName) => [
+        _appRouteFor(
+          RouteSettings(name: initialRouteName),
+          redirectToLive:
+              AppRoutes.destinationForPath(initialRouteName) == null,
+        ),
+      ],
+      onGenerateRoute: _appRouteFor,
+      onUnknownRoute: (settings) => _appRouteFor(
+        const RouteSettings(name: AppRoutes.livePath),
+        redirectToLive: true,
+      ),
+      navigatorObservers: widget.navigatorObservers,
     ),
   );
 }
@@ -136,6 +152,55 @@ class StationSelectionScope extends InheritedNotifier<StationSelectionService> {
 
 enum AppDestination { today, live, analysis, map, more }
 
+/// Stable main-page paths used by Flutter Web while keeping mobile navigation
+/// on the same Navigator API.
+abstract final class AppRoutes {
+  static const todayPath = '/heute';
+  static const livePath = '/live';
+  static const analysisPath = '/analyse';
+  static const mapPath = '/karte';
+  static const morePath = '/mehr';
+
+  static String pathFor(AppDestination destination) => switch (destination) {
+    AppDestination.today => todayPath,
+    AppDestination.live => livePath,
+    AppDestination.analysis => analysisPath,
+    AppDestination.map => mapPath,
+    AppDestination.more => morePath,
+  };
+
+  static AppDestination? destinationForPath(String? path) => switch (path) {
+    todayPath => AppDestination.today,
+    livePath || '/' || '' => AppDestination.live,
+    analysisPath => AppDestination.analysis,
+    mapPath => AppDestination.map,
+    morePath => AppDestination.more,
+    _ => null,
+  };
+
+  static String normalize(String? path) =>
+      destinationForPath(path) == null ? livePath : (path == '/' ? livePath : path!);
+}
+
+Route<void> _appRouteFor(
+  RouteSettings settings, {
+  bool redirectToLive = false,
+}) {
+  final destination = AppRoutes.destinationForPath(settings.name);
+  return MaterialPageRoute<void>(
+    settings: RouteSettings(
+      name: destination == null ? AppRoutes.livePath : AppRoutes.pathFor(destination),
+    ),
+    builder: (_) => DashboardPage(
+      initialDestination: destination ?? AppDestination.live,
+      initialStation: settings.arguments is PegelStation
+          ? settings.arguments! as PegelStation
+          : null,
+      redirectToLive: redirectToLive || destination == null,
+    ),
+  );
+}
+
 void _navigateTo(
   BuildContext context,
   AppDestination destination, {
@@ -144,8 +209,16 @@ void _navigateTo(
   if (initialStation != null) {
     StationSelectionScope.maybeOf(context)?.select(initialStation);
   }
+  final path = AppRoutes.pathFor(destination);
+  if (kIsWeb) {
+    SystemNavigator.routeInformationUpdated(
+      uri: Uri(path: path),
+      replace: false,
+    );
+  }
   Navigator.of(context).pushAndRemoveUntil(
     MaterialPageRoute<void>(
+      settings: RouteSettings(name: path, arguments: initialStation),
       builder: (_) => DashboardPage(
         initialDestination: destination,
         initialStation: initialStation,
@@ -160,10 +233,12 @@ class DashboardPage extends StatefulWidget {
     super.key,
     this.initialDestination = AppDestination.live,
     this.initialStation,
+    this.redirectToLive = false,
   });
 
   final AppDestination initialDestination;
   final PegelStation? initialStation;
+  final bool redirectToLive;
 
   @override
   State<DashboardPage> createState() => _DashboardPageState();
@@ -196,7 +271,8 @@ class _DashboardPageState extends State<DashboardPage> {
     _environmentData = _loadEnvironmentData(_selectedStation);
     _insight = _loadCachedInsight(_selectedStation, _liveData);
     _favoriteUuids = _loadFavoriteUuids();
-    if (widget.initialDestination != AppDestination.live) {
+    if (widget.initialDestination != AppDestination.live ||
+        widget.redirectToLive) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _openInitialDestination(),
       );
@@ -205,6 +281,16 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _openInitialDestination() {
     if (!mounted) return;
+    if (widget.redirectToLive) {
+      if (kIsWeb) {
+        SystemNavigator.routeInformationUpdated(
+          uri: Uri(path: AppRoutes.livePath),
+          replace: true,
+        );
+      }
+      Navigator.of(context).pushReplacementNamed(AppRoutes.livePath);
+      return;
+    }
     final page = switch (widget.initialDestination) {
       AppDestination.today => const TodayPage(),
       AppDestination.live => null,
@@ -217,8 +303,14 @@ class _DashboardPageState extends State<DashboardPage> {
       AppDestination.more => const MorePage(),
     };
     if (page != null) {
-      Navigator.of(context)
-          .pushReplacement(MaterialPageRoute<void>(builder: (_) => page));
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          settings: RouteSettings(
+            name: AppRoutes.pathFor(widget.initialDestination),
+          ),
+          builder: (_) => page,
+        ),
+      );
     }
   }
 

@@ -36,6 +36,63 @@ void main() {
     expect(find.byType(DashboardPage), findsOneWidget);
   });
 
+  testWidgets('opens each stable main route directly', (
+    WidgetTester tester,
+  ) async {
+    final cases = <({String path, Type pageType})>[
+      (path: '/heute', pageType: TodayPage),
+      (path: '/live', pageType: DashboardPage),
+      (path: '/analyse', pageType: AnalysisPage),
+      (path: '/karte', pageType: MapPage),
+      (path: '/mehr', pageType: MorePage),
+    ];
+
+    for (final testCase in cases) {
+      tester.binding.platformDispatcher.defaultRouteNameTestValue =
+          testCase.path;
+      await tester.pumpWidget(const BodenseePegelApp());
+      await tester.pumpAndSettle();
+      expect(find.byType(testCase.pageType), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+    tester.binding.platformDispatcher.defaultRouteNameTestValue = '/';
+  });
+
+  testWidgets('unknown main route falls back to Live', (
+    WidgetTester tester,
+  ) async {
+    tester.binding.platformDispatcher.defaultRouteNameTestValue =
+        '/unbekannt';
+    addTearDown(
+      () => tester.binding.platformDispatcher.defaultRouteNameTestValue = '/',
+    );
+
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    expect(find.byType(DashboardPage), findsOneWidget);
+  });
+
+  testWidgets('bottom navigation updates the main route', (
+    WidgetTester tester,
+  ) async {
+    final observer = _RecordedRouteObserver();
+    await tester.pumpWidget(BodenseePegelApp(navigatorObservers: [observer]));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-today')));
+    await tester.pumpAndSettle();
+    expect(observer.lastRouteName, '/heute');
+
+    await tester.tap(find.byKey(const ValueKey('nav-analysis')));
+    await tester.pumpAndSettle();
+    expect(observer.lastRouteName, '/analyse');
+
+    await tester.tap(find.byKey(const ValueKey('nav-map')));
+    await tester.pumpAndSettle();
+    expect(observer.lastRouteName, '/karte');
+  });
+
   testWidgets('navigates through all primary destinations including Today', (
     WidgetTester tester,
   ) async {
@@ -883,5 +940,21 @@ void main() {
       expect(find.byType(DashboardPage), findsOneWidget);
       expect(find.text(station.$2), findsWidgets);
     });
+  }
+}
+
+class _RecordedRouteObserver extends NavigatorObserver {
+  String? lastRouteName;
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    lastRouteName = route.settings.name;
+    super.didPush(route, previousRoute);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    lastRouteName = newRoute?.settings.name;
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
   }
 }
