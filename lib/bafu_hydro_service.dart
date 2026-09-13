@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:timezone/data/latest.dart' as timezone_data;
+import 'package:timezone/timezone.dart' as tz;
 
 import 'pegelonline_service.dart';
 
@@ -43,6 +45,85 @@ class BafuForecastData {
 
   final List<BafuForecastPoint> points;
   final String? issuedLabel;
+}
+
+/// Auswahl eines offiziellen BAFU-Prognosepunkts für einen lokalen
+/// Romanshorn-Kalendertag. Die Originalwerte bleiben unverändert in m ü. M.;
+/// die Umrechnung in Pegel-cm erfolgt erst für die Anzeige.
+abstract final class BafuForecastDaySelection {
+  static final tz.Location _zurich = _loadZurich();
+
+  static tz.Location _loadZurich() {
+    timezone_data.initializeTimeZones();
+    return tz.getLocation('Europe/Zurich');
+  }
+
+  /// Liefert für künftige Tage den offiziellen Punkt nahe 12:00 Uhr.
+  /// Für heute werden ausschließlich zukünftige Punkte berücksichtigt: vor
+  /// 12:00 Uhr der Punkt nahe Mittag, danach der nächste verfügbare Punkt.
+  static BafuForecastPoint? representativePoint({
+    required BafuForecastData forecast,
+    required DateTime localDate,
+    DateTime? nowUtc,
+  }) {
+    final targetDay = tz.TZDateTime(
+      _zurich,
+      localDate.year,
+      localDate.month,
+      localDate.day,
+    );
+    final now = nowUtc ?? DateTime.now().toUtc();
+    final nowLocal = tz.TZDateTime.from(now, _zurich);
+    final isToday =
+        targetDay.year == nowLocal.year &&
+        targetDay.month == nowLocal.month &&
+        targetDay.day == nowLocal.day;
+    var candidates = forecast.points.where((point) {
+      final local = tz.TZDateTime.from(point.timestamp.toUtc(), _zurich);
+      return local.year == targetDay.year &&
+          local.month == targetDay.month &&
+          local.day == targetDay.day;
+    }).toList()..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    if (candidates.isEmpty) return null;
+
+    final noon = tz.TZDateTime(
+      _zurich,
+      targetDay.year,
+      targetDay.month,
+      targetDay.day,
+      12,
+    );
+    if (isToday) {
+      candidates = candidates
+          .where((point) => !point.timestamp.toUtc().isBefore(now))
+          .toList();
+      if (candidates.isEmpty) return null;
+      if (!nowLocal.isAfter(noon)) {
+        return _closestTo(candidates, noon.toUtc());
+      }
+      return candidates.first;
+    }
+    return _closestTo(candidates, noon.toUtc());
+  }
+
+  static double medianLevelCentimeters(BafuForecastPoint point) =>
+      (point.medianMasl - BafuHydroService.romanshornReferenceMasl) * 100;
+
+  static String localTimeLabel(BafuForecastPoint point) {
+    final local = tz.TZDateTime.from(point.timestamp.toUtc(), _zurich);
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  static BafuForecastPoint _closestTo(
+    List<BafuForecastPoint> points,
+    DateTime target,
+  ) => points.reduce(
+    (closest, candidate) =>
+        candidate.timestamp.toUtc().difference(target).inMilliseconds.abs() <
+            closest.timestamp.toUtc().difference(target).inMilliseconds.abs()
+        ? candidate
+        : closest,
+  );
 }
 
 class BafuHydroService {
@@ -237,7 +318,6 @@ WHERE {
           : closest,
     );
   }
-
 }
 
 class BafuHydroException implements Exception {

@@ -5,13 +5,17 @@ import 'package:archive/archive.dart';
 import 'package:bodensee_pegel/bafu_hydro_service.dart';
 import 'package:bodensee_pegel/dwd_forecast_service.dart';
 import 'package:bodensee_pegel/main.dart';
+import 'package:bodensee_pegel/meteoswiss_forecast_service.dart';
 import 'package:bodensee_pegel/station_selection_service.dart';
+import 'package:bodensee_pegel/vorarlberg_hydro_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:timezone/data/latest.dart' as timezone_data;
+import 'package:timezone/timezone.dart' as tz;
 
 void main() {
   setUp(() {
@@ -46,17 +50,111 @@ void main() {
     expect(find.text('Regen'), findsOneWidget);
     expect(find.text('10–10 °C'), findsOneWidget);
     expect(find.textContaining('AB JETZT'), findsOneWidget);
-    expect(find.text('0,2 mm · ab jetzt'), findsOneWidget);
+    expect(find.text('0,2 mm'), findsOneWidget);
+    expect(find.text('ab jetzt'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('today-day-1')));
     await tester.pumpAndSettle();
     expect(find.text('20–20 °C'), findsOneWidget);
     expect(find.textContaining('AB JETZT'), findsNothing);
     expect(find.text('1,5 mm'), findsOneWidget);
-    expect(find.text('1,5 mm · ab jetzt'), findsNothing);
+    expect(find.text('ab jetzt'), findsNothing);
   });
 
-  testWidgets('missing MOSMIX values and non-Konstanz remain neutral', (
+  testWidgets('Romanshorn renders MeteoSwiss fixture data and switches days', (
+    tester,
+  ) async {
+    final now = DateTime.now().toUtc();
+    final service = MeteoSwissForecastService(
+      client: MockClient(
+        (_) async =>
+            http.Response(jsonEncode(_meteoswissForecastPayload(now)), 200),
+      ),
+    );
+    final selection = StationSelectionService()
+      ..select(BafuHydroService.romanshorn, persistLast: false);
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _scopedToday(
+        station: selection,
+        service: DwdForecastService(),
+        meteoSwissService: service,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Prognose: MeteoSwiss'), findsOneWidget);
+    expect(find.text('ziemlich sonnig'), findsOneWidget);
+    expect(find.text('10–10 °C'), findsOneWidget);
+    expect(find.text('0,2 mm'), findsOneWidget);
+    expect(find.text('ab jetzt'), findsOneWidget);
+    expect(find.text('7 km/h · SW'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('today-day-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('20–20 °C'), findsOneWidget);
+    expect(find.text('1,5 mm'), findsOneWidget);
+    expect(find.text('ab jetzt'), findsNothing);
+  });
+
+  testWidgets('Romanshorn shows the official BAFU level forecast by day', (
+    tester,
+  ) async {
+    timezone_data.initializeTimeZones();
+    final zurich = tz.getLocation('Europe/Zurich');
+    final localTomorrow = tz.TZDateTime.now(zurich)
+        .add(const Duration(days: 1));
+    final tomorrowNoon = tz.TZDateTime(
+      zurich,
+      localTomorrow.year,
+      localTomorrow.month,
+      localTomorrow.day,
+      12,
+    ).toUtc();
+    final bafuForecast = BafuForecastData(
+      points: [
+        BafuForecastPoint(
+          timestamp: tomorrowNoon,
+          medianMasl: 394.89,
+          minimumMasl: 394.8,
+          maximumMasl: 394.98,
+        ),
+      ],
+    );
+    final selection = StationSelectionService()
+      ..select(BafuHydroService.romanshorn, persistLast: false);
+    final weatherService = MeteoSwissForecastService(
+      client: MockClient(
+        (_) async => http.Response(
+          jsonEncode(_meteoswissForecastPayload(DateTime.now().toUtc())),
+          200,
+        ),
+      ),
+    );
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _scopedToday(
+        station: selection,
+        service: DwdForecastService(),
+        meteoSwissService: weatherService,
+        bafuForecastLoader: () async => bafuForecast,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('today-day-1')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('266 cm'), findsOneWidget);
+    expect(find.textContaining('Prognose · 12:00'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('today-day-6')));
+    await tester.pumpAndSettle();
+    expect(find.text('Nicht verfügbar'), findsWidgets);
+  });
+
+  testWidgets('missing MOSMIX values and Bregenz remain neutral', (
     tester,
   ) async {
     final now = DateTime.now().toUtc();
@@ -72,10 +170,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Nicht verfügbar'), findsWidgets);
 
-    final romanshornSelection = StationSelectionService()
-      ..select(BafuHydroService.romanshorn, persistLast: false);
+    final bregenzSelection = StationSelectionService()
+      ..select(VorarlbergHydroService.bregenz, persistLast: false);
     await tester.pumpWidget(
-      _scopedToday(station: romanshornSelection, service: missingService),
+      _scopedToday(station: bregenzSelection, service: missingService),
     );
     await tester.pumpAndSettle();
     expect(find.text('Noch keine Prognosedaten verfügbar'), findsWidgets);
@@ -89,10 +187,50 @@ void main() {
 Widget _scopedToday({
   required StationSelectionService station,
   required DwdForecastService service,
+  MeteoSwissForecastService? meteoSwissService,
+  Future<BafuForecastData> Function()? bafuForecastLoader,
 }) => StationSelectionScope(
   notifier: station,
-  child: MaterialApp(home: TodayPage(dwdForecastService: service)),
+  child: MaterialApp(
+    home: TodayPage(
+      dwdForecastService: service,
+      meteoSwissForecastService: meteoSwissService,
+      bafuForecastLoader: bafuForecastLoader,
+    ),
+  ),
 );
+
+Map<String, dynamic> _meteoswissForecastPayload(DateTime now) {
+  final first = now.add(const Duration(minutes: 10));
+  final second = first.add(const Duration(days: 1));
+  Map<String, dynamic> point(
+    DateTime timestamp,
+    double temperature,
+    double rain,
+  ) => {
+    'timestampUtc': timestamp.toIso8601String(),
+    'temperatureCelsius': temperature,
+    'precipitationMillimeters': rain,
+    'windKilometersPerHour': 7,
+    'gustKilometersPerHour': 14,
+    'windDirectionDegrees': 225,
+    'weatherCode': 2,
+  };
+  return {
+    'station': {
+      'pointId': '859000',
+      'pointTypeId': '2',
+      'postalCode': '8590',
+      'name': 'Romanshorn',
+      'latitude': 47.566578,
+      'longitude': 9.370531,
+      'elevationMeters': 412,
+    },
+    'updatedAtUtc': now.toIso8601String(),
+    'runAtUtc': now.toIso8601String(),
+    'points': [point(first, 10, .2), point(second, 20, 1.5)],
+  };
+}
 
 String _forecastKml(DateTime now, {bool missing = false}) {
   final first = now.add(const Duration(minutes: 10));

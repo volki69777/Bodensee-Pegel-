@@ -16,6 +16,7 @@ import 'environment_service.dart';
 import 'favorites_service.dart';
 import 'insight_service.dart';
 import 'map_configuration.dart';
+import 'meteoswiss_forecast_service.dart';
 import 'pegelonline_service.dart';
 import 'station_data_cache.dart';
 import 'station_selection_service.dart';
@@ -543,9 +544,16 @@ class _DashboardPageState extends State<DashboardPage> {
 }
 
 class TodayPage extends StatefulWidget {
-  const TodayPage({super.key, this.dwdForecastService});
+  const TodayPage({
+    super.key,
+    this.dwdForecastService,
+    this.meteoSwissForecastService,
+    this.bafuForecastLoader,
+  });
 
   final DwdForecastService? dwdForecastService;
+  final MeteoSwissForecastService? meteoSwissForecastService;
+  final Future<BafuForecastData> Function()? bafuForecastLoader;
 
   @override
   State<TodayPage> createState() => _TodayPageState();
@@ -555,10 +563,14 @@ class _TodayPageState extends State<TodayPage> {
   static const _stations = StationSelectionService.stations;
   final _activitiesBoatsService = ActivitiesBoatsService();
   late final DwdForecastService _dwdForecastService;
+  late final MeteoSwissForecastService _meteoSwissForecastService;
+  late final Future<BafuForecastData> Function() _bafuForecastLoader;
   PegelStation _station = PegelOnlineService.konstanz;
   StationSelectionService? _stationSelection;
   late DateTime _selectedDate;
   Future<DwdMosmixForecast>? _dwdForecast;
+  Future<MeteoSwissForecast>? _meteoSwissForecast;
+  Future<BafuForecastData>? _bafuForecast;
   List<String> _selectedActivityIds = const [];
   bool _activitiesLoaded = false;
 
@@ -566,9 +578,13 @@ class _TodayPageState extends State<TodayPage> {
   void initState() {
     super.initState();
     _dwdForecastService = widget.dwdForecastService ?? DwdForecastService();
+    _meteoSwissForecastService =
+        widget.meteoSwissForecastService ?? MeteoSwissForecastService();
+    _bafuForecastLoader =
+        widget.bafuForecastLoader ?? BafuHydroService().fetchRomanshornForecast;
     _selectedDate = _dayOnly(DateTime.now());
     _loadSelectedActivities();
-    _loadDwdForecastForStation();
+    _loadForecastForStation();
   }
 
   Future<void> _loadSelectedActivities() async {
@@ -593,18 +609,22 @@ class _TodayPageState extends State<TodayPage> {
     _stationSelection?.removeListener(_syncStation);
     _stationSelection = selection;
     selection?.addListener(_syncStation);
-    _station = selection?.currentStation ?? _station;
+    final selectedStation = selection?.currentStation;
+    if (selectedStation != null && selectedStation.uuid != _station.uuid) {
+      _station = selectedStation;
+      _loadForecastForStation();
+    }
   }
 
   void _syncStation() {
     final station = _stationSelection?.currentStation;
     if (station != null && mounted && station.uuid != _station.uuid) {
       setState(() => _station = station);
-      _loadDwdForecastForStation();
+      _loadForecastForStation();
     }
   }
 
-  void _loadDwdForecastForStation() {
+  void _loadForecastForStation() {
     if (_station.uuid == PegelOnlineService.konstanz.uuid) {
       if (_dwdForecast == null) {
         final future = _dwdForecastService.load();
@@ -620,8 +640,36 @@ class _TodayPageState extends State<TodayPage> {
           ),
         );
       }
+      _meteoSwissForecast = null;
+      _bafuForecast = null;
+    } else if (_station.uuid == BafuHydroService.romanshorn.uuid) {
+      if (_meteoSwissForecast == null) {
+        final future = _meteoSwissForecastService.load();
+        _meteoSwissForecast = future;
+        // Keep an error listener while a station change temporarily removes
+        // the FutureBuilder that owns the visible error state.
+        unawaited(
+          future.then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stackTrace) {},
+          ),
+        );
+      }
+      _dwdForecast = null;
+      if (_bafuForecast == null) {
+        final future = _bafuForecastLoader();
+        _bafuForecast = future;
+        unawaited(
+          future.then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stackTrace) {},
+          ),
+        );
+      }
     } else {
       _dwdForecast = null;
+      _meteoSwissForecast = null;
+      _bafuForecast = null;
     }
   }
 
@@ -636,7 +684,7 @@ class _TodayPageState extends State<TodayPage> {
       _stationSelection?.select(station);
       if (_stationSelection == null) {
         setState(() => _station = station);
-        _loadDwdForecastForStation();
+        _loadForecastForStation();
       }
     }
   }
@@ -716,15 +764,50 @@ class _TodayPageState extends State<TodayPage> {
 
   Widget _buildTodayOverview() {
     final isKonstanz = _station.uuid == PegelOnlineService.konstanz.uuid;
-    if (!isKonstanz) {
+    final isRomanshorn = _station.uuid == BafuHydroService.romanshorn.uuid;
+    if (!isKonstanz && !isRomanshorn) {
       return _TodayOverviewCard(
         date: _selectedDate,
         station: _station,
         state: _TodayForecastState.neutral,
       );
     }
-    return FutureBuilder<DwdMosmixForecast>(
-      future: _dwdForecast,
+    if (isKonstanz) {
+      return FutureBuilder<DwdMosmixForecast>(
+        future: _dwdForecast,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return _TodayOverviewCard(
+              date: _selectedDate,
+              station: _station,
+              state: _TodayForecastState.loading,
+            );
+          }
+          final day = snapshot.hasData
+              ? DwdMosmixAggregation.aggregate(snapshot.data!).firstWhere(
+                  (candidate) => _dayOnly(candidate.localDate) == _selectedDate,
+                  orElse: () => DwdDailyForecast(
+                    localDate: _selectedDate,
+                    points: const [],
+                  ),
+                )
+              : null;
+          return _ForecastOverviewWithSource(
+            card: _TodayOverviewCard(
+              date: _selectedDate,
+              station: _station,
+              forecast: day == null ? null : _TodayForecastValues.fromDwd(day),
+              state: snapshot.hasData
+                  ? _TodayForecastState.available
+                  : _TodayForecastState.unavailable,
+            ),
+            source: 'Prognose: Deutscher Wetterdienst (DWD) · MOSMIX',
+          );
+        },
+      );
+    }
+    return FutureBuilder<MeteoSwissForecast>(
+      future: _meteoSwissForecast,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return _TodayOverviewCard(
@@ -734,44 +817,44 @@ class _TodayPageState extends State<TodayPage> {
           );
         }
         final day = snapshot.hasData
-            ? DwdMosmixAggregation.aggregate(snapshot.data!).firstWhere(
-                (candidate) => _dayOnly(candidate.localDate) == _selectedDate,
-                orElse: () => DwdDailyForecast(
-                  localDate: _selectedDate,
-                  points: const [],
-                ),
-              )
-            : null;
-        return Column(
-          children: [
-            _TodayOverviewCard(
-              date: _selectedDate,
-              station: _station,
-              forecast: day,
-              state: snapshot.hasData
-                  ? _TodayForecastState.available
-                  : _TodayForecastState.unavailable,
-            ),
-            const SizedBox(height: 8),
-            const Padding(
-              padding: EdgeInsets.only(left: 4),
-              child: Text(
-                'Prognose: Deutscher Wetterdienst (DWD) · MOSMIX',
-                style: TextStyle(
-                  color: Color(0xFFF8FBFF),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  shadows: [
-                    Shadow(
-                      color: Color(0x9900163A),
-                      blurRadius: 4,
-                      offset: Offset(0, 1),
+            ? MeteoSwissForecastAggregation.aggregate(snapshot.data!)
+                  .firstWhere(
+                    (candidate) =>
+                        _dayOnly(candidate.localDate) == _selectedDate,
+                    orElse: () => MeteoSwissDailyForecast(
+                      localDate: _selectedDate,
+                      points: const [],
                     ),
-                  ],
-                ),
+                  )
+            : null;
+        return FutureBuilder<BafuForecastData>(
+          future: _bafuForecast,
+          builder: (context, bafuSnapshot) {
+            final point = bafuSnapshot.hasData
+                ? BafuForecastDaySelection.representativePoint(
+                    forecast: bafuSnapshot.data!,
+                    localDate: _selectedDate,
+                  )
+                : null;
+            return _ForecastOverviewWithSource(
+              card: _TodayOverviewCard(
+                date: _selectedDate,
+                station: _station,
+                forecast: day == null
+                    ? null
+                    : _TodayForecastValues.fromMeteoSwiss(day),
+                state: snapshot.hasData
+                    ? _TodayForecastState.available
+                    : _TodayForecastState.unavailable,
+                waterLevelForecast: point == null
+                    ? null
+                    : _TodayWaterLevelForecast.fromBafu(point),
+                waterLevelForecastLoading:
+                    bafuSnapshot.connectionState != ConnectionState.done,
               ),
-            ),
-          ],
+              source: 'Prognose: MeteoSwiss',
+            );
+          },
         );
       },
     );
@@ -883,18 +966,118 @@ class _DayChoiceChip extends StatelessWidget {
 
 enum _TodayForecastState { loading, neutral, unavailable, available }
 
+class _TodayForecastValues {
+  const _TodayForecastValues({
+    this.temperatureMinimumCelsius,
+    this.temperatureMaximumCelsius,
+    this.precipitationMillimeters,
+    this.representativeWindKilometersPerHour,
+    this.maximumGustKilometersPerHour,
+    this.windDirectionAbbreviation,
+    this.weatherLabel,
+  });
+
+  factory _TodayForecastValues.fromDwd(DwdDailyForecast forecast) =>
+      _TodayForecastValues(
+        temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
+        temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
+        precipitationMillimeters: forecast.precipitationMillimeters,
+        representativeWindKilometersPerHour:
+            forecast.representativeWindKilometersPerHour,
+        maximumGustKilometersPerHour: forecast.maximumGustKilometersPerHour,
+        windDirectionAbbreviation: forecast.windDirectionAbbreviation,
+        weatherLabel: forecast.weatherLabel,
+      );
+
+  factory _TodayForecastValues.fromMeteoSwiss(
+    MeteoSwissDailyForecast forecast,
+  ) => _TodayForecastValues(
+    temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
+    temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
+    precipitationMillimeters: forecast.precipitationMillimeters,
+    representativeWindKilometersPerHour:
+        forecast.representativeWindKilometersPerHour,
+    maximumGustKilometersPerHour: forecast.maximumGustKilometersPerHour,
+    windDirectionAbbreviation: forecast.windDirectionAbbreviation,
+    weatherLabel: forecast.weatherLabel,
+  );
+
+  final double? temperatureMinimumCelsius;
+  final double? temperatureMaximumCelsius;
+  final double? precipitationMillimeters;
+  final double? representativeWindKilometersPerHour;
+  final double? maximumGustKilometersPerHour;
+  final String? windDirectionAbbreviation;
+  final String? weatherLabel;
+}
+
+class _TodayWaterLevelForecast {
+  const _TodayWaterLevelForecast({
+    required this.levelCentimeters,
+    required this.timeLabel,
+  });
+
+  factory _TodayWaterLevelForecast.fromBafu(BafuForecastPoint point) =>
+      _TodayWaterLevelForecast(
+        levelCentimeters: BafuForecastDaySelection.medianLevelCentimeters(
+          point,
+        ),
+        timeLabel: BafuForecastDaySelection.localTimeLabel(point),
+      );
+
+  final double levelCentimeters;
+  final String timeLabel;
+}
+
+class _ForecastOverviewWithSource extends StatelessWidget {
+  const _ForecastOverviewWithSource({required this.card, required this.source});
+
+  final Widget card;
+  final String source;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      card,
+      const SizedBox(height: 8),
+      Padding(
+        padding: const EdgeInsets.only(left: 4),
+        child: Text(
+          source,
+          style: const TextStyle(
+            color: Color(0xFFF8FBFF),
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            shadows: [
+              Shadow(
+                color: Color(0x9900163A),
+                blurRadius: 4,
+                offset: Offset(0, 1),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
 class _TodayOverviewCard extends StatelessWidget {
   const _TodayOverviewCard({
     required this.date,
     required this.station,
     required this.state,
     this.forecast,
+    this.waterLevelForecast,
+    this.waterLevelForecastLoading = false,
   });
 
   final DateTime date;
   final PegelStation station;
   final _TodayForecastState state;
-  final DwdDailyForecast? forecast;
+  final _TodayForecastValues? forecast;
+  final _TodayWaterLevelForecast? waterLevelForecast;
+  final bool waterLevelForecastLoading;
 
   bool get _isToday => _dayOnly(date) == _dayOnly(DateTime.now());
 
@@ -908,19 +1091,22 @@ class _TodayOverviewCard extends StatelessWidget {
     _ => 'Nicht verfügbar',
   };
 
-  List<(IconData, String, String)> get _items {
+  List<(IconData, String, _TodayMetricContent)> get _items {
     if (state != _TodayForecastState.available || forecast == null) {
       return [
-        (Icons.cloud_outlined, 'Wetter', _pendingLabel),
-        (Icons.thermostat_rounded, 'Temperatur', _pendingLabel),
-        (Icons.water_drop_outlined, 'Niederschlag', _pendingLabel),
-        (Icons.air_rounded, 'Wind', _pendingLabel),
-        (Icons.speed_rounded, 'Böen', _pendingLabel),
-        (Icons.waves_rounded, 'Pegel', 'Noch keine Prognosedaten verfügbar'),
+        (Icons.cloud_outlined, 'Wetter', _pendingContent),
+        (Icons.thermostat_rounded, 'Temperatur', _pendingContent),
+        (Icons.water_drop_outlined, 'Niederschlag', _pendingContent),
+        (Icons.air_rounded, 'Wind', _pendingContent),
+        (Icons.speed_rounded, 'Böen', _pendingContent),
+        (Icons.waves_rounded, 'Pegel', _waterLevelLabel),
         (
           Icons.warning_amber_rounded,
           'Warnungen',
-          'Noch keine Warnungsdaten verfügbar',
+          const _TodayMetricContent(
+            value: 'Noch keine Warnungsdaten verfügbar',
+            isInformational: true,
+          ),
         ),
       ];
     }
@@ -928,32 +1114,48 @@ class _TodayOverviewCard extends StatelessWidget {
       (
         Icons.cloud_outlined,
         'Wetter',
-        forecast!.weatherLabel ?? 'Nicht verfügbar',
+        _TodayMetricContent.fromValue(forecast!.weatherLabel),
       ),
       (
         Icons.thermostat_rounded,
         'Temperatur',
-        _temperatureRange(
-          forecast!.temperatureMinimumCelsius,
-          forecast!.temperatureMaximumCelsius,
+        _TodayMetricContent.fromValue(
+          _temperatureRange(
+            forecast!.temperatureMinimumCelsius,
+            forecast!.temperatureMaximumCelsius,
+          ),
         ),
       ),
       (
         Icons.water_drop_outlined,
         'Niederschlag',
-        _precipitationLabel(forecast!.precipitationMillimeters),
+        _TodayMetricContent.fromValue(
+          _millimeters(forecast!.precipitationMillimeters),
+          detail: _isToday && forecast!.precipitationMillimeters != null
+              ? 'ab jetzt'
+              : null,
+        ),
       ),
-      (Icons.air_rounded, 'Wind', _wind(forecast!)),
+      (
+        Icons.air_rounded,
+        'Wind',
+        _TodayMetricContent.fromValue(_wind(forecast!)),
+      ),
       (
         Icons.speed_rounded,
         'Böen',
-        _kilometersPerHour(forecast!.maximumGustKilometersPerHour),
+        _TodayMetricContent.fromValue(
+          _kilometersPerHour(forecast!.maximumGustKilometersPerHour),
+        ),
       ),
-      (Icons.waves_rounded, 'Pegel', 'Noch keine Prognosedaten verfügbar'),
+      (Icons.waves_rounded, 'Pegel', _waterLevelLabel),
       (
         Icons.warning_amber_rounded,
         'Warnungen',
-        'Noch keine Warnungsdaten verfügbar',
+        const _TodayMetricContent(
+          value: 'Noch keine Warnungsdaten verfügbar',
+          isInformational: true,
+        ),
       ),
     ];
   }
@@ -993,7 +1195,7 @@ class _TodayOverviewCard extends StatelessWidget {
                       child: _TodayMetric(
                         icon: item.$1,
                         label: item.$2,
-                        value: item.$3,
+                        content: item.$3,
                       ),
                     ),
                   )
@@ -1005,10 +1207,58 @@ class _TodayOverviewCard extends StatelessWidget {
     ),
   );
 
-  String _precipitationLabel(double? value) {
-    final label = _millimeters(value);
-    return _isToday && value != null ? '$label · ab jetzt' : label;
+  _TodayMetricContent get _pendingContent => _TodayMetricContent(
+    value: _pendingLabel,
+    isInformational: state != _TodayForecastState.unavailable,
+  );
+
+  _TodayMetricContent get _waterLevelLabel {
+    if (station.source != StationSource.bafu) {
+      return const _TodayMetricContent(
+        value: 'Noch keine Prognosedaten verfügbar',
+        isInformational: true,
+      );
+    }
+    final data = waterLevelForecast;
+    if (data != null) {
+      return _TodayMetricContent(
+        value: '${data.levelCentimeters.round()} cm',
+        detail: 'Prognose · ${data.timeLabel}',
+      );
+    }
+    return waterLevelForecastLoading
+        ? const _TodayMetricContent(
+            value: 'Prognosedaten werden geladen',
+            isInformational: true,
+          )
+        : const _TodayMetricContent(
+            value: 'Nicht verfügbar',
+            isUnavailable: true,
+          );
   }
+}
+
+class _TodayMetricContent {
+  const _TodayMetricContent({
+    required this.value,
+    this.detail,
+    this.isUnavailable = false,
+    this.isInformational = false,
+  });
+
+  factory _TodayMetricContent.fromValue(String? value, {String? detail}) {
+    final isUnavailable = value == null || value == 'Nicht verfügbar';
+    return _TodayMetricContent(
+      value: value ?? 'Nicht verfügbar',
+      detail: detail,
+      isUnavailable: isUnavailable,
+    );
+  }
+
+  final String value;
+  final String? detail;
+  final bool isUnavailable;
+  final bool isInformational;
 }
 
 String _temperatureRange(double? minimum, double? maximum) {
@@ -1023,7 +1273,7 @@ String _millimeters(double? value) => value == null
 String _kilometersPerHour(double? value) =>
     value == null ? 'Nicht verfügbar' : '${value.round()} km/h';
 
-String _wind(DwdDailyForecast forecast) {
+String _wind(_TodayForecastValues forecast) {
   final speed = _kilometersPerHour(
     forecast.representativeWindKilometersPerHour,
   );
@@ -1036,12 +1286,12 @@ class _TodayMetric extends StatelessWidget {
   const _TodayMetric({
     required this.icon,
     required this.label,
-    required this.value,
+    required this.content,
   });
 
   final IconData icon;
   final String label;
-  final String value;
+  final _TodayMetricContent content;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -1062,22 +1312,42 @@ class _TodayMetric extends StatelessWidget {
               Text(
                 label,
                 style: const TextStyle(
-                  color: AppColors.navy,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF62738F),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 3),
               Text(
-                value,
+                content.value,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFF71809A),
-                  fontSize: 10,
-                  height: 1.2,
+                style: TextStyle(
+                  color: content.isUnavailable || content.isInformational
+                      ? const Color(0xFF71809A)
+                      : AppColors.navy,
+                  fontSize: content.isUnavailable || content.isInformational
+                      ? 10
+                      : 15,
+                  height: 1.18,
+                  fontWeight: content.isUnavailable || content.isInformational
+                      ? FontWeight.w500
+                      : FontWeight.w800,
                 ),
               ),
+              if (content.detail != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  content.detail!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF71809A),
+                    fontSize: 10,
+                    height: 1.15,
+                  ),
+                ),
+              ],
             ],
           ),
         ),

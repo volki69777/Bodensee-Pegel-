@@ -30,6 +30,29 @@ const dwdMosmixKonstanzSourceUrl =
   'https://opendata.dwd.de/weather/local_forecasts/mos/MOSMIX_L/single_stations/10929/kml/MOSMIX_L_LATEST_10929.kmz';
 const meteoSwissGuettingenUrl =
   'https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/gut/ogd-smn_gut_t_now.csv';
+const meteoSwissRomanshornRoute = '/api/meteoswiss/forecast/romanshorn';
+const meteoSwissStacItemsUrl =
+  'https://data.geo.admin.ch/api/stac/v1/collections/ch.meteoschweiz.ogd-local-forecasting/items?limit=10';
+const meteoSwissRomanshornPoint = {
+  pointId: '859000',
+  pointTypeId: '2',
+  postalCode: '8590',
+  name: 'Romanshorn',
+  latitude: 47.566578,
+  longitude: 9.370531,
+  elevationMeters: 412,
+};
+const meteoSwissParameters = [
+  'tre200h0',
+  'rre150h0',
+  'fu3010h0',
+  'fu3010h1',
+  'dkl010h0',
+  'jww003i0',
+];
+let meteoSwissForecastCache;
+let meteoSwissForecastCacheAt;
+let meteoSwissForecastInFlight;
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -107,6 +130,147 @@ async function fetchText(sourceUrl) {
   return sourceResponse.text();
 }
 
+function parseMeteoSwissRun(name) {
+  const match = /^vnut12\.lssw\.(\d{12})\.([a-z0-9]+)\.csv$/i.exec(name);
+  if (!match) return null;
+  const [, rawTimestamp, parameter] = match;
+  const timestamp = Date.UTC(
+    Number(rawTimestamp.slice(0, 4)),
+    Number(rawTimestamp.slice(4, 6)) - 1,
+    Number(rawTimestamp.slice(6, 8)),
+    Number(rawTimestamp.slice(8, 10)),
+    Number(rawTimestamp.slice(10, 12)),
+  );
+  return Number.isFinite(timestamp) ? { timestamp, parameter } : null;
+}
+
+function meteoswissTimestampUtc(raw) {
+  if (!/^\d{12}$/.test(raw)) return null;
+  const timestamp = Date.UTC(
+    Number(raw.slice(0, 4)),
+    Number(raw.slice(4, 6)) - 1,
+    Number(raw.slice(6, 8)),
+    Number(raw.slice(8, 10)),
+    Number(raw.slice(10, 12)),
+  );
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+async function loadMeteoSwissRomanshornParameter(sourceUrl, parameter) {
+  const sourceResponse = await fetch(sourceUrl, {
+    headers: { Accept: 'text/csv; charset=ISO-8859-1, text/csv, */*' },
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!sourceResponse.ok) {
+    throw new Error(`MeteoSwiss ${parameter} responded with HTTP ${sourceResponse.status}.`);
+  }
+  // The official point files contain all Swiss forecast points. Filter only
+  // Romanshorn while the data is server-side, so Flutter receives no bulky
+  // nationwide dataset and never has to access the cross-origin CSV directly.
+  const text = await sourceResponse.text();
+  const values = new Map();
+  const expression = /^859000;2;(\d{12});([^\r\n]*)$/gm;
+  for (const match of text.matchAll(expression)) {
+    const timestampUtc = meteoswissTimestampUtc(match[1]);
+    if (timestampUtc) values.set(timestampUtc, numberOrNull(match[2]?.trim()));
+  }
+  if (values.size === 0) {
+    throw new Error(`MeteoSwiss ${parameter} has no Romanshorn point rows.`);
+  }
+  return values;
+}
+
+async function fetchMeteoSwissRomanshornForecast() {
+  const catalogResponse = await fetch(meteoSwissStacItemsUrl, {
+    headers: { Accept: 'application/geo+json, application/json' },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!catalogResponse.ok) {
+    throw new Error(`MeteoSwiss STAC responded with HTTP ${catalogResponse.status}.`);
+  }
+  const catalog = await catalogResponse.json();
+  if (!Array.isArray(catalog?.features)) {
+    throw new Error('MeteoSwiss STAC has no forecast items.');
+  }
+  const newestByParameter = new Map();
+  let updatedAtUtc = null;
+  for (const item of catalog.features) {
+    const updated = Date.parse(item?.properties?.updated ?? '');
+    if (Number.isFinite(updated) && (!updatedAtUtc || updated > Date.parse(updatedAtUtc))) {
+      updatedAtUtc = new Date(updated).toISOString();
+    }
+    for (const [name, asset] of Object.entries(item?.assets ?? {})) {
+      const parsed = parseMeteoSwissRun(name);
+      if (!parsed || !meteoSwissParameters.includes(parsed.parameter) || !asset?.href) continue;
+      const existing = newestByParameter.get(parsed.parameter);
+      if (!existing || parsed.timestamp > existing.timestamp) {
+        newestByParameter.set(parsed.parameter, { ...parsed, href: asset.href });
+      }
+    }
+  }
+  if (newestByParameter.size !== meteoSwissParameters.length) {
+    throw new Error('MeteoSwiss STAC is missing a required Romanshorn forecast parameter.');
+  }
+
+  const rawParameters = new Map();
+  // Process sequentially to limit the memory footprint of the large official
+  // all-Switzerland CSV files. Results are cached below for 30 minutes.
+  for (const parameter of meteoSwissParameters) {
+    const asset = newestByParameter.get(parameter);
+    rawParameters.set(
+      parameter,
+      await loadMeteoSwissRomanshornParameter(asset.href, parameter),
+    );
+  }
+  const timestamps = new Set();
+  for (const values of rawParameters.values()) {
+    for (const timestamp of values.keys()) timestamps.add(timestamp);
+  }
+  const points = [...timestamps]
+    .sort()
+    .map((timestampUtc) => ({
+      timestampUtc,
+      temperatureCelsius: rawParameters.get('tre200h0').get(timestampUtc) ?? null,
+      precipitationMillimeters: rawParameters.get('rre150h0').get(timestampUtc) ?? null,
+      windKilometersPerHour: rawParameters.get('fu3010h0').get(timestampUtc) ?? null,
+      gustKilometersPerHour: rawParameters.get('fu3010h1').get(timestampUtc) ?? null,
+      windDirectionDegrees: rawParameters.get('dkl010h0').get(timestampUtc) ?? null,
+      weatherCode: rawParameters.get('jww003i0').get(timestampUtc) ?? null,
+    }));
+  if (points.length === 0) throw new Error('MeteoSwiss has no Romanshorn forecast points.');
+  const runAtUtc = new Date(
+    Math.max(...[...newestByParameter.values()].map((asset) => asset.timestamp)),
+  ).toISOString();
+  return {
+    source: 'MeteoSwiss Open Data · Localised forecasting data – Point data',
+    station: meteoSwissRomanshornPoint,
+    updatedAtUtc,
+    runAtUtc,
+    sourceUrls: Object.fromEntries(
+      [...newestByParameter.entries()].map(([parameter, asset]) => [parameter, asset.href]),
+    ),
+    points,
+  };
+}
+
+async function loadMeteoSwissRomanshornForecast() {
+  const cacheStillValid =
+    meteoSwissForecastCache &&
+    meteoSwissForecastCacheAt &&
+    Date.now() - meteoSwissForecastCacheAt < 30 * 60 * 1000;
+  if (cacheStillValid) return meteoSwissForecastCache;
+  meteoSwissForecastInFlight ??= fetchMeteoSwissRomanshornForecast()
+    .then((forecast) => {
+      meteoSwissForecastCache = forecast;
+      meteoSwissForecastCacheAt = Date.now();
+      return forecast;
+    })
+    .finally(() => {
+      meteoSwissForecastInFlight = undefined;
+    });
+  return meteoSwissForecastInFlight;
+}
+
 async function fetchDwdRecord(sourceUrl) {
   const sourceResponse = await fetch(sourceUrl, {
     headers: { Accept: 'application/zip' },
@@ -174,6 +338,11 @@ const server = http.createServer(async (request, response) => {
         'Cache-Control': 'no-store',
       });
       response.end(kmz);
+      return;
+    }
+
+    if (requestUrl.pathname === meteoSwissRomanshornRoute) {
+      sendJson(response, 200, await loadMeteoSwissRomanshornForecast());
       return;
     }
 
@@ -295,6 +464,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`BAFU history proxy listening on http://127.0.0.1:${port}${bafuHistoryRoute}`);
   console.log(`BAFU forecast proxy listening on http://127.0.0.1:${port}${bafuForecastRoute}`);
   console.log(`DWD MOSMIX proxy listening on http://127.0.0.1:${port}${dwdMosmixKonstanzRoute}`);
+  console.log(`MeteoSwiss Romanshorn proxy listening on http://127.0.0.1:${port}${meteoSwissRomanshornRoute}`);
   console.log(`Vorarlberg live proxy listening on http://127.0.0.1:${port}${vorarlbergLiveRoute}`);
   console.log(`Environment proxy listening on http://127.0.0.1:${port}/api/environment/{stationUuid}`);
 });
