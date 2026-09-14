@@ -61,8 +61,7 @@ void main() {
   testWidgets('unknown main route falls back to Live', (
     WidgetTester tester,
   ) async {
-    tester.binding.platformDispatcher.defaultRouteNameTestValue =
-        '/unbekannt';
+    tester.binding.platformDispatcher.defaultRouteNameTestValue = '/unbekannt';
     addTearDown(
       () => tester.binding.platformDispatcher.defaultRouteNameTestValue = '/',
     );
@@ -208,6 +207,8 @@ void main() {
     expect(find.byType(ActivitiesBoatsPage), findsOneWidget);
     expect(find.text('MEINE AKTIVITÄTEN'), findsOneWidget);
     expect(find.text('MEINE BOOTE'), findsOneWidget);
+    expect(find.byKey(const ValueKey('activity-radfahren')), findsNothing);
+    expect(find.byKey(const ValueKey('activity-wandern')), findsNothing);
   });
 
   testWidgets('activities and multiple boats persist after a widget rebuild', (
@@ -387,15 +388,14 @@ void main() {
   testWidgets('Today filters activities and weekly rows from saved choices', (
     WidgetTester tester,
   ) async {
+    // Legacy preferences can still contain removed V1 activities. They are
+    // ignored; the remaining valid selection stays intact.
     await ActivitiesBoatsService().saveActivities(['segeln', 'wandern']);
     await tester.pumpWidget(const MaterialApp(home: TodayPage()));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('today-activity-segeln')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('today-activity-wandern')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('today-activity-wandern')), findsNothing);
     expect(
       find.byKey(const ValueKey('today-activity-motorboot')),
       findsNothing,
@@ -404,10 +404,7 @@ void main() {
       find.byKey(const ValueKey('weekly-activity-segeln')),
       findsOneWidget,
     );
-    expect(
-      find.byKey(const ValueKey('weekly-activity-wandern')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('weekly-activity-wandern')), findsNothing);
     expect(
       find.byKey(const ValueKey('weekly-activity-motorboot')),
       findsNothing,

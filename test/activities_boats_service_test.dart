@@ -12,14 +12,14 @@ void main() {
 
   test('stores activities and several boat profiles locally', () async {
     final service = ActivitiesBoatsService();
-    await service.saveActivities(['segeln', 'baden']);
+    await service.saveActivities(['segeln', 'baden', 'radfahren', 'wandern']);
     await service.saveBoats(const [
       BoatProfile(id: '1', name: 'Seestern', bootType: BoatType.sailboat),
       BoatProfile(id: '2', name: 'Albatros', bootType: BoatType.motorboat),
     ]);
 
     final restored = await ActivitiesBoatsService().load(
-      validActivities: ['segeln', 'baden', 'wandern'],
+      validActivities: ['segeln', 'baden'],
     );
     expect(restored.selectedActivities, orderedEquals(['segeln', 'baden']));
     expect(

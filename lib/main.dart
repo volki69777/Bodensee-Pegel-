@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'analysis_service.dart';
 import 'activity_rating_service.dart';
+import 'activity_time_window_service.dart';
 import 'activities_boats_service.dart';
 import 'bafu_hydro_service.dart';
 import 'dwd_forecast_service.dart';
@@ -651,6 +652,7 @@ class TodayPage extends StatefulWidget {
     this.officialWarningService,
     this.bafuForecastLoader,
     this.environmentLoader,
+    this.nowProvider,
   });
 
   final DwdForecastService? dwdForecastService;
@@ -660,6 +662,8 @@ class TodayPage extends StatefulWidget {
   final Future<BafuForecastData> Function()? bafuForecastLoader;
   final Future<StationEnvironmentData> Function(PegelStation)?
   environmentLoader;
+  @visibleForTesting
+  final DateTime Function()? nowProvider;
 
   @override
   State<TodayPage> createState() => _TodayPageState();
@@ -675,6 +679,7 @@ class _TodayPageState extends State<TodayPage> {
   late final Future<BafuForecastData> Function() _bafuForecastLoader;
   late final Future<StationEnvironmentData> Function(PegelStation)
   _environmentLoader;
+  late final DateTime Function() _nowProvider;
   PegelStation _station = PegelOnlineService.konstanz;
   StationSelectionService? _stationSelection;
   late DateTime _selectedDate;
@@ -702,6 +707,7 @@ class _TodayPageState extends State<TodayPage> {
         widget.bafuForecastLoader ?? BafuHydroService().fetchRomanshornForecast;
     _environmentLoader =
         widget.environmentLoader ?? EnvironmentService().fetchFor;
+    _nowProvider = widget.nowProvider ?? DateTime.now;
     _selectedDate = _dayOnly(DateTime.now());
     _loadSelectedActivities();
     _loadForecastForStation();
@@ -1074,6 +1080,12 @@ class _TodayPageState extends State<TodayPage> {
                     .map(_TodayForecastValues.fromDwd)
                     .toList(growable: false)
               : const [],
+          timeWindowPoints: snapshot.hasData
+              ? snapshot.data!.points
+                    .map(ActivityTimeWindowPoint.fromDwd)
+                    .toList(growable: false)
+              : const [],
+          timeWindowLocation: ActivityTimeWindowAggregation.berlin,
         ),
       );
     }
@@ -1088,6 +1100,12 @@ class _TodayPageState extends State<TodayPage> {
                     .map(_TodayForecastValues.fromMeteoSwiss)
                     .toList(growable: false)
               : const [],
+          timeWindowPoints: snapshot.hasData
+              ? snapshot.data!.points
+                    .map(ActivityTimeWindowPoint.fromMeteoSwiss)
+                    .toList(growable: false)
+              : const [],
+          timeWindowLocation: ActivityTimeWindowAggregation.zurich,
         ),
       );
     }
@@ -1103,6 +1121,12 @@ class _TodayPageState extends State<TodayPage> {
                     .map(_TodayForecastValues.fromGeoSphere)
                     .toList(growable: false)
               : const [],
+          timeWindowPoints: snapshot.hasData
+              ? snapshot.data!.points
+                    .map(ActivityTimeWindowPoint.fromGeoSphere)
+                    .toList(growable: false)
+              : const [],
+          timeWindowLocation: ActivityTimeWindowAggregation.vienna,
           bregenzWaterTemperatureToday:
               environmentSnapshot.hasData && !environmentSnapshot.hasError
               ? environmentSnapshot.data!.waterTemperatureC
@@ -1116,6 +1140,8 @@ class _TodayPageState extends State<TodayPage> {
     required List<DateTime> days,
     required List<_PlannerActivity> activities,
     required List<_TodayForecastValues> forecasts,
+    required List<ActivityTimeWindowPoint> timeWindowPoints,
+    required tz.Location timeWindowLocation,
     double? bregenzWaterTemperatureToday,
   }) {
     final forecastsByDay = <DateTime, _TodayForecastValues>{
@@ -1139,11 +1165,45 @@ class _TodayPageState extends State<TodayPage> {
             ),
         },
     };
+    final nowUtc = _nowProvider().toUtc();
+    final nowLocal = tz.TZDateTime.from(nowUtc, timeWindowLocation);
+    final selectedDayIsToday =
+        _selectedDate == DateTime(nowLocal.year, nowLocal.month, nowLocal.day);
+    final timeWindowForecasts = selectedDayIsToday
+        ? ActivityTimeWindowAggregation.aggregate(
+            points: timeWindowPoints,
+            windows: ActivityTimeWindowAggregation.schedule(
+              nowUtc: nowUtc,
+              location: timeWindowLocation,
+            ),
+          )
+        : const <ActivityTimeWindowForecast>[];
+    final timeWindowRatings = <ActivityTimeWindow, Map<String, ActivityRating>>{
+      for (final forecast in timeWindowForecasts)
+        forecast.window: {
+          for (final activity in activities)
+            activity.id: ActivityRatingService.rate(
+              activityId: activity.id,
+              data: _activityTimeWindowForecastData(
+                forecast,
+                // A local VOWIS water measurement is a current observation,
+                // not a forecast. It is therefore used only in the genuinely
+                // running Bregenz interval and never propagated to later ones.
+                waterTemperatureCelsius:
+                    _station.uuid == VorarlbergHydroService.bregenz.uuid &&
+                        forecast.window.isCurrent
+                    ? bregenzWaterTemperatureToday
+                    : null,
+              ),
+            ),
+        },
+    };
     return Column(
       children: [
         _TodayActivitiesSection(
           activities: activities,
           ratings: ratingsByDay[_selectedDate] ?? const {},
+          timeWindowRatings: timeWindowRatings,
         ),
         const SizedBox(height: 20),
         _WeeklyPlannerSection(
@@ -1164,6 +1224,18 @@ class _TodayPageState extends State<TodayPage> {
     precipitationMillimeters: forecast?.precipitationMillimeters,
     windKilometersPerHour: forecast?.representativeWindKilometersPerHour,
     gustKilometersPerHour: forecast?.maximumGustKilometersPerHour,
+    waterTemperatureCelsius: waterTemperatureCelsius,
+  );
+
+  ActivityForecastData _activityTimeWindowForecastData(
+    ActivityTimeWindowForecast forecast, {
+    double? waterTemperatureCelsius,
+  }) => ActivityForecastData(
+    temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
+    temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
+    precipitationMillimeters: forecast.precipitationMillimeters,
+    windKilometersPerHour: forecast.representativeWindKilometersPerHour,
+    gustKilometersPerHour: forecast.maximumGustKilometersPerHour,
     waterTemperatureCelsius: waterTemperatureCelsius,
   );
 }
@@ -1971,18 +2043,18 @@ const plannerActivities = <_PlannerActivity>[
   _PlannerActivity('kiten', 'Kiten', Icons.air_rounded),
   _PlannerActivity('angeln', 'Angeln', Icons.phishing_rounded),
   _PlannerActivity('baden', 'Baden / Schwimmen', Icons.pool_rounded),
-  _PlannerActivity('radfahren', 'Radfahren', Icons.directions_bike_rounded),
-  _PlannerActivity('wandern', 'Wandern', Icons.hiking_rounded),
 ];
 
 class _TodayActivitiesSection extends StatelessWidget {
   const _TodayActivitiesSection({
     required this.activities,
     required this.ratings,
+    required this.timeWindowRatings,
   });
 
   final List<_PlannerActivity> activities;
   final Map<String, ActivityRating> ratings;
+  final Map<ActivityTimeWindow, Map<String, ActivityRating>> timeWindowRatings;
 
   @override
   Widget build(BuildContext context) => _MoreSection(
@@ -2000,6 +2072,15 @@ class _TodayActivitiesSection extends StatelessWidget {
                     ActivityRatingLevel.unavailable,
                     'Nicht genügend Wetterdaten verfügbar',
                   ),
+              timeWindowRatings: {
+                for (final entry in timeWindowRatings.entries)
+                  entry.key:
+                      entry.value[activities[index].id] ??
+                      const ActivityRating(
+                        ActivityRatingLevel.unavailable,
+                        'Nicht genügend Wetterdaten verfügbar',
+                      ),
+              },
             ),
             if (index < activities.length - 1)
               const Divider(height: 1, color: Color(0xFFEAF0F7)),
@@ -2011,15 +2092,20 @@ class _TodayActivitiesSection extends StatelessWidget {
 }
 
 class _TodayActivityRow extends StatelessWidget {
-  const _TodayActivityRow({required this.activity, required this.rating});
+  const _TodayActivityRow({
+    required this.activity,
+    required this.rating,
+    required this.timeWindowRatings,
+  });
 
   final _PlannerActivity activity;
   final ActivityRating rating;
+  final Map<ActivityTimeWindow, ActivityRating> timeWindowRatings;
 
   @override
   Widget build(BuildContext context) => SizedBox(
     key: ValueKey('today-activity-${activity.id}'),
-    height: 54,
+    height: timeWindowRatings.isEmpty ? 54 : 84,
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -2077,7 +2163,80 @@ class _TodayActivityRow extends StatelessWidget {
             ),
           ],
         ),
+        if (timeWindowRatings.isNotEmpty) ...[
+          const SizedBox(height: 5),
+          Padding(
+            padding: const EdgeInsets.only(left: 37),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Wrap(
+                spacing: 5,
+                runSpacing: 3,
+                children: [
+                  for (final entry in timeWindowRatings.entries)
+                    _TimeWindowRatingChip(
+                      key: ValueKey(
+                        'time-window-${activity.id}-${entry.key.label}',
+                      ),
+                      window: entry.key,
+                      rating: entry.value,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ],
+    ),
+  );
+}
+
+class _TimeWindowRatingChip extends StatelessWidget {
+  const _TimeWindowRatingChip({
+    super.key,
+    required this.window,
+    required this.rating,
+  });
+
+  final ActivityTimeWindow window;
+  final ActivityRating rating;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(window.label),
+          content: Text('${rating.label}\n${rating.reason}'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Schließen'),
+            ),
+          ],
+        ),
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF2F7FE),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFDCE8F7)),
+        ),
+        child: Text(
+          '${window.label} ${rating.shortLabel}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: _ratingColor(rating.level),
+            fontSize: 9,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ),
     ),
   );
 }

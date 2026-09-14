@@ -426,6 +426,48 @@ void main() {
       );
     },
   );
+
+  testWidgets('Today shows tappable upcoming time-window ratings', (
+    tester,
+  ) async {
+    final today = DateTime.now();
+    final windowNow = DateTime(
+      today.year,
+      today.month,
+      today.day,
+      10,
+      37,
+    ).toUtc();
+    final service = DwdForecastService(
+      client: MockClient(
+        (_) async => http.Response.bytes(_kmz(_timeWindowKml(windowNow)), 200),
+      ),
+    );
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _scopedToday(
+        station: StationSelectionService(),
+        service: service,
+        nowProvider: () => windowNow,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final chip = find.byKey(const ValueKey('time-window-sup_kajak-Jetzt–12'));
+    expect(chip, findsOneWidget);
+    await tester.ensureVisible(chip);
+    await tester.tap(chip);
+    await tester.pumpAndSettle();
+    expect(find.text('Jetzt–12'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.textContaining('Leichter Wind'),
+      ),
+      findsOneWidget,
+    );
+  });
 }
 
 Widget _scopedToday({
@@ -436,6 +478,7 @@ Widget _scopedToday({
   OfficialWarningService? warningService,
   Future<BafuForecastData> Function()? bafuForecastLoader,
   Future<StationEnvironmentData> Function(PegelStation)? environmentLoader,
+  DateTime Function()? nowProvider,
 }) => StationSelectionScope(
   notifier: station,
   child: MaterialApp(
@@ -446,6 +489,7 @@ Widget _scopedToday({
       officialWarningService: warningService,
       bafuForecastLoader: bafuForecastLoader,
       environmentLoader: environmentLoader,
+      nowProvider: nowProvider,
     ),
   ),
 );
@@ -595,6 +639,22 @@ String _forecastKml(DateTime now, {bool missing = false}) {
 <dwd:Forecast dwd:elementName="DD"><dwd:value>225 180</dwd:value></dwd:Forecast>
 <dwd:Forecast dwd:elementName="RR1c"><dwd:value>0.2 1.5</dwd:value></dwd:Forecast>
 <dwd:Forecast dwd:elementName="ww"><dwd:value>61 61</dwd:value></dwd:Forecast>
+</Placemark></Document></kml>''';
+}
+
+String _timeWindowKml(DateTime now) {
+  final eleven = now.add(const Duration(minutes: 23));
+  final noon = now.add(const Duration(hours: 1, minutes: 23));
+  final evening = now.add(const Duration(hours: 7, minutes: 23));
+  return '''<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:dwd="https://opendata.dwd.de/weather/lib/pointforecast_dwd_extension_V1_0.xsd">
+<dwd:ProductDefinition><dwd:ForecastTimeSteps><dwd:TimeStep>${eleven.toIso8601String()}</dwd:TimeStep><dwd:TimeStep>${noon.toIso8601String()}</dwd:TimeStep><dwd:TimeStep>${evening.toIso8601String()}</dwd:TimeStep></dwd:ForecastTimeSteps></dwd:ProductDefinition>
+<Document><Placemark><name>10929</name><description>KONSTANZ</description><Point><coordinates>9.18,47.68,443</coordinates></Point>
+<dwd:Forecast dwd:elementName="TTT"><dwd:value>293.15 294.15 290.15</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="FF"><dwd:value>2 3 4</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="FX1"><dwd:value>4 5 6</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="DD"><dwd:value>90 180 270</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="RR1c"><dwd:value>0.2 0.2 0.1</dwd:value></dwd:Forecast>
 </Placemark></Document></kml>''';
 }
 
