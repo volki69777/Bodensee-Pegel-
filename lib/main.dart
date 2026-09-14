@@ -8,6 +8,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/timezone.dart' as tz;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'analysis_service.dart';
@@ -21,6 +22,7 @@ import 'geosphere_forecast_service.dart';
 import 'insight_service.dart';
 import 'map_configuration.dart';
 import 'meteoswiss_forecast_service.dart';
+import 'official_warning_service.dart';
 import 'pegelonline_service.dart';
 import 'station_data_cache.dart';
 import 'station_selection_service.dart';
@@ -179,8 +181,9 @@ abstract final class AppRoutes {
     _ => null,
   };
 
-  static String normalize(String? path) =>
-      destinationForPath(path) == null ? livePath : (path == '/' ? livePath : path!);
+  static String normalize(String? path) => destinationForPath(path) == null
+      ? livePath
+      : (path == '/' ? livePath : path!);
 }
 
 Route<void> _appRouteFor(
@@ -190,7 +193,9 @@ Route<void> _appRouteFor(
   final destination = AppRoutes.destinationForPath(settings.name);
   return MaterialPageRoute<void>(
     settings: RouteSettings(
-      name: destination == null ? AppRoutes.livePath : AppRoutes.pathFor(destination),
+      name: destination == null
+          ? AppRoutes.livePath
+          : AppRoutes.pathFor(destination),
     ),
     builder: (_) => DashboardPage(
       initialDestination: destination ?? AppDestination.live,
@@ -643,6 +648,7 @@ class TodayPage extends StatefulWidget {
     this.dwdForecastService,
     this.meteoSwissForecastService,
     this.geoSphereForecastService,
+    this.officialWarningService,
     this.bafuForecastLoader,
     this.environmentLoader,
   });
@@ -650,6 +656,7 @@ class TodayPage extends StatefulWidget {
   final DwdForecastService? dwdForecastService;
   final MeteoSwissForecastService? meteoSwissForecastService;
   final GeoSphereForecastService? geoSphereForecastService;
+  final OfficialWarningService? officialWarningService;
   final Future<BafuForecastData> Function()? bafuForecastLoader;
   final Future<StationEnvironmentData> Function(PegelStation)?
   environmentLoader;
@@ -664,6 +671,7 @@ class _TodayPageState extends State<TodayPage> {
   late final DwdForecastService _dwdForecastService;
   late final MeteoSwissForecastService _meteoSwissForecastService;
   late final GeoSphereForecastService _geoSphereForecastService;
+  late final OfficialWarningService _officialWarningService;
   late final Future<BafuForecastData> Function() _bafuForecastLoader;
   late final Future<StationEnvironmentData> Function(PegelStation)
   _environmentLoader;
@@ -673,6 +681,8 @@ class _TodayPageState extends State<TodayPage> {
   Future<DwdMosmixForecast>? _dwdForecast;
   Future<MeteoSwissForecast>? _meteoSwissForecast;
   Future<GeoSphereForecast>? _geoSphereForecast;
+  Future<OfficialWarnings>? _officialWarnings;
+  OfficialWarningSource? _warningSource;
   Future<BafuForecastData>? _bafuForecast;
   Future<StationEnvironmentData>? _bregenzEnvironment;
   List<String> _selectedActivityIds = const [];
@@ -686,6 +696,8 @@ class _TodayPageState extends State<TodayPage> {
         widget.meteoSwissForecastService ?? MeteoSwissForecastService();
     _geoSphereForecastService =
         widget.geoSphereForecastService ?? GeoSphereForecastService();
+    _officialWarningService =
+        widget.officialWarningService ?? OfficialWarningService();
     _bafuForecastLoader =
         widget.bafuForecastLoader ?? BafuHydroService().fetchRomanshornForecast;
     _environmentLoader =
@@ -752,6 +764,12 @@ class _TodayPageState extends State<TodayPage> {
       _bafuForecast = null;
       _geoSphereForecast = null;
       _bregenzEnvironment = null;
+      if (_warningSource != OfficialWarningSource.dwd) {
+        _warningSource = OfficialWarningSource.dwd;
+        _officialWarnings = _loadWarnings(
+          _officialWarningService.loadDwdKonstanz(),
+        );
+      }
     } else if (_station.uuid == BafuHydroService.romanshorn.uuid) {
       if (_meteoSwissForecast == null) {
         final future = _meteoSwissForecastService.load();
@@ -768,6 +786,11 @@ class _TodayPageState extends State<TodayPage> {
       _dwdForecast = null;
       _geoSphereForecast = null;
       _bregenzEnvironment = null;
+      // MeteoSwiss has no documented, public machine-readable warning feed.
+      // Keep this intentionally unavailable instead of deriving warnings from
+      // its forecast values.
+      _officialWarnings = null;
+      _warningSource = null;
       if (_bafuForecast == null) {
         final future = _bafuForecastLoader();
         _bafuForecast = future;
@@ -782,6 +805,12 @@ class _TodayPageState extends State<TodayPage> {
       _dwdForecast = null;
       _meteoSwissForecast = null;
       _bafuForecast = null;
+      if (_warningSource != OfficialWarningSource.geoSphere) {
+        _warningSource = OfficialWarningSource.geoSphere;
+        _officialWarnings = _loadWarnings(
+          _officialWarningService.loadGeoSphereBregenz(),
+        );
+      }
       if (_geoSphereForecast == null) {
         final future = _geoSphereForecastService.load();
         _geoSphereForecast = future;
@@ -800,6 +829,11 @@ class _TodayPageState extends State<TodayPage> {
         );
       }
     }
+  }
+
+  Future<OfficialWarnings> _loadWarnings(Future<OfficialWarnings> future) {
+    unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+    return future;
   }
 
   Future<void> _selectStation() async {
@@ -898,6 +932,7 @@ class _TodayPageState extends State<TodayPage> {
               date: _selectedDate,
               station: _station,
               state: _TodayForecastState.loading,
+              warningFuture: _officialWarnings,
             );
           }
           final day = snapshot.hasData
@@ -917,8 +952,11 @@ class _TodayPageState extends State<TodayPage> {
               state: snapshot.hasData
                   ? _TodayForecastState.available
                   : _TodayForecastState.unavailable,
+              warningFuture: _officialWarnings,
             ),
-            source: 'Prognose: Deutscher Wetterdienst (DWD) · MOSMIX',
+            source:
+                'Prognose: Deutscher Wetterdienst (DWD) · MOSMIX\n'
+                'Warnungen: Deutscher Wetterdienst (DWD)',
           );
         },
       );
@@ -932,6 +970,7 @@ class _TodayPageState extends State<TodayPage> {
               date: _selectedDate,
               station: _station,
               state: _TodayForecastState.loading,
+              warningsUnavailable: true,
             );
           }
           final day = snapshot.hasData
@@ -969,8 +1008,11 @@ class _TodayPageState extends State<TodayPage> {
                       : _TodayWaterLevelForecast.fromBafu(point),
                   waterLevelForecastLoading:
                       bafuSnapshot.connectionState != ConnectionState.done,
+                  warningsUnavailable: true,
                 ),
-                source: 'Prognose: MeteoSwiss',
+                source:
+                    'Prognose: MeteoSwiss\n'
+                    'Warnungen: nicht maschinenlesbar verfügbar',
               );
             },
           );
@@ -985,6 +1027,7 @@ class _TodayPageState extends State<TodayPage> {
             date: _selectedDate,
             station: _station,
             state: _TodayForecastState.loading,
+            warningFuture: _officialWarnings,
           );
         }
         final day = snapshot.hasData
@@ -1006,8 +1049,11 @@ class _TodayPageState extends State<TodayPage> {
             state: snapshot.hasData
                 ? _TodayForecastState.available
                 : _TodayForecastState.unavailable,
+            warningFuture: _officialWarnings,
           ),
-          source: 'Prognose: GeoSphere Austria',
+          source:
+              'Prognose: GeoSphere Austria\n'
+              'Warnungen: GeoSphere Austria · CC BY 4.0',
         );
       },
     );
@@ -1320,20 +1366,28 @@ class _ForecastOverviewWithSource extends StatelessWidget {
       const SizedBox(height: 8),
       Padding(
         padding: const EdgeInsets.only(left: 4),
-        child: Text(
-          source,
-          style: const TextStyle(
-            color: Color(0xFFF8FBFF),
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            shadows: [
-              Shadow(
-                color: Color(0x9900163A),
-                blurRadius: 4,
-                offset: Offset(0, 1),
-              ),
-            ],
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: source
+              .split('\n')
+              .map(
+                (line) => Text(
+                  line,
+                  style: const TextStyle(
+                    color: Color(0xFFF8FBFF),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    shadows: [
+                      Shadow(
+                        color: Color(0x9900163A),
+                        blurRadius: 4,
+                        offset: Offset(0, 1),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+              .toList(growable: false),
         ),
       ),
     ],
@@ -1348,6 +1402,8 @@ class _TodayOverviewCard extends StatelessWidget {
     this.forecast,
     this.waterLevelForecast,
     this.waterLevelForecastLoading = false,
+    this.warningFuture,
+    this.warningsUnavailable = false,
   });
 
   final DateTime date;
@@ -1356,6 +1412,8 @@ class _TodayOverviewCard extends StatelessWidget {
   final _TodayForecastValues? forecast;
   final _TodayWaterLevelForecast? waterLevelForecast;
   final bool waterLevelForecastLoading;
+  final Future<OfficialWarnings>? warningFuture;
+  final bool warningsUnavailable;
 
   bool get _isToday => _dayOnly(date) == _dayOnly(DateTime.now());
 
@@ -1369,22 +1427,32 @@ class _TodayOverviewCard extends StatelessWidget {
     _ => 'Nicht verfügbar',
   };
 
-  List<(IconData, String, _TodayMetricContent)> get _items {
+  tz.Location? get _warningLocation => switch (station.uuid) {
+    final id when id == PegelOnlineService.konstanz.uuid =>
+      OfficialWarningTimeZones.berlin,
+    final id when id == VorarlbergHydroService.bregenz.uuid =>
+      OfficialWarningTimeZones.vienna,
+    _ => null,
+  };
+
+  List<(IconData, String, _TodayMetricContent, VoidCallback?)> _items(
+    BuildContext context,
+    AsyncSnapshot<OfficialWarnings> warningSnapshot,
+  ) {
+    final warning = _warningContent(context, warningSnapshot);
     if (state != _TodayForecastState.available || forecast == null) {
       return [
-        (Icons.cloud_outlined, 'Wetter', _pendingContent),
-        (Icons.thermostat_rounded, 'Temperatur', _pendingContent),
-        (Icons.water_drop_outlined, 'Niederschlag', _pendingContent),
-        (Icons.air_rounded, 'Wind', _pendingContent),
-        (Icons.speed_rounded, 'Böen', _pendingContent),
-        (Icons.waves_rounded, 'Pegel', _waterLevelLabel),
+        (Icons.cloud_outlined, 'Wetter', _pendingContent, null),
+        (Icons.thermostat_rounded, 'Temperatur', _pendingContent, null),
+        (Icons.water_drop_outlined, 'Niederschlag', _pendingContent, null),
+        (Icons.air_rounded, 'Wind', _pendingContent, null),
+        (Icons.speed_rounded, 'Böen', _pendingContent, null),
+        (Icons.waves_rounded, 'Pegel', _waterLevelLabel, null),
         (
           Icons.warning_amber_rounded,
           'Warnungen',
-          const _TodayMetricContent(
-            value: 'Noch keine Warnungsdaten verfügbar',
-            isInformational: true,
-          ),
+          warning.content,
+          warning.onTap,
         ),
       ];
     }
@@ -1393,6 +1461,7 @@ class _TodayOverviewCard extends StatelessWidget {
         Icons.cloud_outlined,
         'Wetter',
         _TodayMetricContent.fromValue(forecast!.weatherLabel),
+        null,
       ),
       (
         Icons.thermostat_rounded,
@@ -1403,6 +1472,7 @@ class _TodayOverviewCard extends StatelessWidget {
             forecast!.temperatureMaximumCelsius,
           ),
         ),
+        null,
       ),
       (
         Icons.water_drop_outlined,
@@ -1413,11 +1483,13 @@ class _TodayOverviewCard extends StatelessWidget {
               ? 'ab jetzt'
               : null,
         ),
+        null,
       ),
       (
         Icons.air_rounded,
         'Wind',
         _TodayMetricContent.fromValue(_wind(forecast!)),
+        null,
       ),
       (
         Icons.speed_rounded,
@@ -1425,63 +1497,66 @@ class _TodayOverviewCard extends StatelessWidget {
         _TodayMetricContent.fromValue(
           _kilometersPerHour(forecast!.maximumGustKilometersPerHour),
         ),
+        null,
       ),
-      (Icons.waves_rounded, 'Pegel', _waterLevelLabel),
+      (Icons.waves_rounded, 'Pegel', _waterLevelLabel, null),
       (
         Icons.warning_amber_rounded,
         'Warnungen',
-        const _TodayMetricContent(
-          value: 'Noch keine Warnungsdaten verfügbar',
-          isInformational: true,
-        ),
+        warning.content,
+        warning.onTap,
       ),
     ];
   }
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: const EdgeInsets.all(18),
-    decoration: _cardDecoration(),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          _title,
-          style: const TextStyle(
-            color: AppColors.deepBlue,
-            fontSize: 16,
-            fontWeight: FontWeight.w900,
+  Widget build(BuildContext context) => FutureBuilder<OfficialWarnings>(
+    future: warningFuture,
+    builder: (context, warningSnapshot) => Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: _cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _title,
+            style: const TextStyle(
+              color: AppColors.deepBlue,
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          station.name,
-          style: const TextStyle(color: Color(0xFF71809A), fontSize: 13),
-        ),
-        const SizedBox(height: 16),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final width = (constraints.maxWidth - 10) / 2;
-            return Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: _items
-                  .map(
-                    (item) => SizedBox(
-                      width: width,
-                      child: _TodayMetric(
-                        icon: item.$1,
-                        label: item.$2,
-                        content: item.$3,
+          const SizedBox(height: 4),
+          Text(
+            station.name,
+            style: const TextStyle(color: Color(0xFF71809A), fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final width = (constraints.maxWidth - 10) / 2;
+              return Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: _items(context, warningSnapshot)
+                    .map(
+                      (item) => SizedBox(
+                        width: width,
+                        child: _TodayMetric(
+                          icon: item.$1,
+                          label: item.$2,
+                          content: item.$3,
+                          onTap: item.$4,
+                        ),
                       ),
-                    ),
-                  )
-                  .toList(),
-            );
-          },
-        ),
-      ],
+                    )
+                    .toList(),
+              );
+            },
+          ),
+        ],
+      ),
     ),
   );
 
@@ -1514,6 +1589,244 @@ class _TodayOverviewCard extends StatelessWidget {
             isUnavailable: true,
           );
   }
+
+  _TodayWarningMetric _warningContent(
+    BuildContext context,
+    AsyncSnapshot<OfficialWarnings> snapshot,
+  ) {
+    if (warningsUnavailable || _warningLocation == null) {
+      return const _TodayWarningMetric(
+        _TodayMetricContent(
+          value: 'Nicht verfügbar',
+          detail: 'Keine maschinenlesbaren Amtswarnungen',
+          isUnavailable: true,
+        ),
+      );
+    }
+    if (snapshot.connectionState != ConnectionState.done) {
+      return const _TodayWarningMetric(
+        _TodayMetricContent(
+          value: 'Warnungen werden geladen',
+          isInformational: true,
+        ),
+      );
+    }
+    if (!snapshot.hasData) {
+      return const _TodayWarningMetric(
+        _TodayMetricContent(
+          value: 'Nicht verfügbar',
+          detail: 'Amtliche Warnungen konnten nicht geladen werden',
+          isUnavailable: true,
+        ),
+      );
+    }
+    final warnings = snapshot.data!.forLocalDay(date, _warningLocation!);
+    if (warnings.isEmpty) {
+      return const _TodayWarningMetric(
+        _TodayMetricContent(
+          value: 'Keine amtlichen Warnungen',
+          isInformational: true,
+        ),
+      );
+    }
+    final first = warnings.first;
+    return _TodayWarningMetric(
+      _TodayMetricContent(
+        value: warnings.length == 1
+            ? '1 amtliche Warnung'
+            : '${warnings.length} amtliche Warnungen',
+        detail: '${first.nativeType} · ${first.severityLabel}',
+      ),
+      onTap: () => _showOfficialWarningDetails(
+        context,
+        warnings: warnings,
+        location: _warningLocation!,
+      ),
+    );
+  }
+}
+
+class _TodayWarningMetric {
+  const _TodayWarningMetric(this.content, {this.onTap});
+
+  final _TodayMetricContent content;
+  final VoidCallback? onTap;
+}
+
+void _showOfficialWarningDetails(
+  BuildContext context, {
+  required List<OfficialWarning> warnings,
+  required tz.Location location,
+}) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) =>
+        _OfficialWarningDetailsSheet(warnings: warnings, location: location),
+  );
+}
+
+class _OfficialWarningDetailsSheet extends StatelessWidget {
+  const _OfficialWarningDetailsSheet({
+    required this.warnings,
+    required this.location,
+  });
+
+  final List<OfficialWarning> warnings;
+  final tz.Location location;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    top: false,
+    child: Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .82,
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 42,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFFD6E2F4),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, color: AppColors.blue),
+              const SizedBox(width: 9),
+              const Expanded(
+                child: Text(
+                  'AMTLICHE WARNUNGEN',
+                  style: TextStyle(
+                    color: AppColors.deepBlue,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Schließen',
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Quelle: ${warnings.first.sourceLabel}',
+            style: const TextStyle(color: Color(0xFF71809A), fontSize: 12),
+          ),
+          const SizedBox(height: 14),
+          Expanded(
+            child: ListView.separated(
+              itemCount: warnings.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
+              itemBuilder: (context, index) => _OfficialWarningDetailCard(
+                warning: warnings[index],
+                location: location,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _OfficialWarningDetailCard extends StatelessWidget {
+  const _OfficialWarningDetailCard({
+    required this.warning,
+    required this.location,
+  });
+
+  final OfficialWarning warning;
+  final tz.Location location;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = warning.headline?.trim().isNotEmpty == true
+        ? warning.headline!
+        : warning.nativeType;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F9FF),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            warning.nativeType,
+            style: const TextStyle(
+              color: AppColors.deepBlue,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppColors.navy,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            '${warning.severityLabel} · gültig ${_warningTimeRange(warning, location)}',
+            style: const TextStyle(color: Color(0xFF62738F), fontSize: 11),
+          ),
+          if (warning.description?.trim().isNotEmpty == true) ...[
+            const SizedBox(height: 9),
+            Text(
+              warning.description!,
+              style: const TextStyle(
+                color: Color(0xFF314968),
+                fontSize: 13,
+                height: 1.35,
+              ),
+            ),
+          ],
+          if (warning.instruction?.trim().isNotEmpty == true) ...[
+            const SizedBox(height: 8),
+            Text(
+              warning.instruction!,
+              style: const TextStyle(
+                color: Color(0xFF314968),
+                fontSize: 12,
+                height: 1.3,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+String _warningTimeRange(OfficialWarning warning, tz.Location location) {
+  String format(DateTime value) {
+    final local = tz.TZDateTime.from(value, location);
+    return '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')} · '
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  return '${format(warning.startsAt)}–${format(warning.endsAt)}';
 }
 
 class _TodayMetricContent {
@@ -1565,71 +1878,80 @@ class _TodayMetric extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.content,
+    this.onTap,
   });
 
   final IconData icon;
   final String label;
   final _TodayMetricContent content;
+  final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(11),
-    decoration: BoxDecoration(
-      color: const Color(0xFFF5F9FF),
-      borderRadius: BorderRadius.circular(15),
-    ),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, color: AppColors.blue, size: 20),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: const TextStyle(
-                  color: Color(0xFF62738F),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                content.value,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: content.isUnavailable || content.isInformational
-                      ? const Color(0xFF71809A)
-                      : AppColors.navy,
-                  fontSize: content.isUnavailable || content.isInformational
-                      ? 10
-                      : 15,
-                  height: 1.18,
-                  fontWeight: content.isUnavailable || content.isInformational
-                      ? FontWeight.w500
-                      : FontWeight.w800,
-                ),
-              ),
-              if (content.detail != null) ...[
-                const SizedBox(height: 2),
-                Text(
-                  content.detail!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFF71809A),
-                    fontSize: 10,
-                    height: 1.15,
-                  ),
-                ),
-              ],
-            ],
-          ),
+  Widget build(BuildContext context) => Semantics(
+    button: onTap != null,
+    child: GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(11),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F9FF),
+          borderRadius: BorderRadius.circular(15),
         ),
-      ],
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: AppColors.blue, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: Color(0xFF62738F),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    content.value,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: content.isUnavailable || content.isInformational
+                          ? const Color(0xFF71809A)
+                          : AppColors.navy,
+                      fontSize: content.isUnavailable || content.isInformational
+                          ? 10
+                          : 15,
+                      height: 1.18,
+                      fontWeight:
+                          content.isUnavailable || content.isInformational
+                          ? FontWeight.w500
+                          : FontWeight.w800,
+                    ),
+                  ),
+                  if (content.detail != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      content.detail!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF71809A),
+                        fontSize: 10,
+                        height: 1.15,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     ),
   );
 }

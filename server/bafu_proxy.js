@@ -28,6 +28,9 @@ const dwdKonstanzWindUrl =
 const dwdMosmixKonstanzRoute = '/api/dwd/mosmix/konstanz';
 const dwdMosmixKonstanzSourceUrl =
   'https://opendata.dwd.de/weather/local_forecasts/mos/MOSMIX_L/single_stations/10929/kml/MOSMIX_L_LATEST_10929.kmz';
+const dwdWarningsKonstanzRoute = '/api/dwd/warnings/konstanz';
+const dwdWarningsKonstanzSourceUrl =
+  'https://opendata.dwd.de/weather/alerts/cap/COMMUNEUNION_DWD_STAT/Z_CAP_C_EDZW_LATEST_PVW_STATUS_PREMIUMDWD_COMMUNEUNION_DE.zip';
 const meteoSwissGuettingenUrl =
   'https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/gut/ogd-smn_gut_t_now.csv';
 const meteoSwissRomanshornRoute = '/api/meteoswiss/forecast/romanshorn';
@@ -341,6 +344,28 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    // DWD CAP does not allow browser CORS. Keep the official ZIP byte-for-byte
+    // intact; Flutter performs the CAP parsing and filters Konstanz by the
+    // documented WarnCellID 808335043.
+    if (requestUrl.pathname === dwdWarningsKonstanzRoute) {
+      const sourceResponse = await fetch(dwdWarningsKonstanzSourceUrl, {
+        headers: { Accept: 'application/zip, */*' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!sourceResponse.ok) {
+        throw new Error(`DWD CAP warnings responded with HTTP ${sourceResponse.status}.`);
+      }
+      const zip = Buffer.from(await sourceResponse.arrayBuffer());
+      response.writeHead(200, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Content-Type': 'application/zip',
+        'Cache-Control': 'no-store',
+      });
+      response.end(zip);
+      return;
+    }
+
     if (requestUrl.pathname === meteoSwissRomanshornRoute) {
       sendJson(response, 200, await loadMeteoSwissRomanshornForecast());
       return;
@@ -464,6 +489,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`BAFU history proxy listening on http://127.0.0.1:${port}${bafuHistoryRoute}`);
   console.log(`BAFU forecast proxy listening on http://127.0.0.1:${port}${bafuForecastRoute}`);
   console.log(`DWD MOSMIX proxy listening on http://127.0.0.1:${port}${dwdMosmixKonstanzRoute}`);
+  console.log(`DWD CAP warning proxy listening on http://127.0.0.1:${port}${dwdWarningsKonstanzRoute}`);
   console.log(`MeteoSwiss Romanshorn proxy listening on http://127.0.0.1:${port}${meteoSwissRomanshornRoute}`);
   console.log(`Vorarlberg live proxy listening on http://127.0.0.1:${port}${vorarlbergLiveRoute}`);
   console.log(`Environment proxy listening on http://127.0.0.1:${port}/api/environment/{stationUuid}`);

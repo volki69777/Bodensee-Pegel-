@@ -8,6 +8,7 @@ import 'package:bodensee_pegel/environment_service.dart';
 import 'package:bodensee_pegel/geosphere_forecast_service.dart';
 import 'package:bodensee_pegel/main.dart';
 import 'package:bodensee_pegel/meteoswiss_forecast_service.dart';
+import 'package:bodensee_pegel/official_warning_service.dart';
 import 'package:bodensee_pegel/pegelonline_service.dart';
 import 'package:bodensee_pegel/station_selection_service.dart';
 import 'package:bodensee_pegel/vorarlberg_hydro_service.dart';
@@ -45,19 +46,28 @@ void main() {
       _scopedToday(station: StationSelectionService(), service: service),
     );
     await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now);
 
     expect(
-      find.text('Prognose: Deutscher Wetterdienst (DWD) · MOSMIX'),
+      find.text(
+        'Prognose: Deutscher Wetterdienst (DWD) · MOSMIX',
+        skipOffstage: false,
+      ),
       findsOneWidget,
     );
     expect(find.text('Regen'), findsOneWidget);
     expect(find.text('10–10 °C'), findsOneWidget);
-    expect(find.textContaining('AB JETZT'), findsOneWidget);
+    expect(
+      find.textContaining('AB JETZT'),
+      _fixtureForecastDayIndex(now) == 0 ? findsOneWidget : findsNothing,
+    );
     expect(find.text('0,2 mm'), findsOneWidget);
-    expect(find.text('ab jetzt'), findsOneWidget);
+    expect(
+      find.text('ab jetzt'),
+      _fixtureForecastDayIndex(now) == 0 ? findsOneWidget : findsNothing,
+    );
 
-    await tester.tap(find.byKey(const ValueKey('today-day-1')));
-    await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now, offset: 1);
     expect(find.text('20–20 °C'), findsOneWidget);
     expect(find.textContaining('AB JETZT'), findsNothing);
     expect(find.text('1,5 mm'), findsOneWidget);
@@ -86,19 +96,94 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now);
 
-    expect(find.text('Prognose: MeteoSwiss'), findsOneWidget);
+    expect(
+      find.text('Prognose: MeteoSwiss', skipOffstage: false),
+      findsOneWidget,
+    );
     expect(find.text('ziemlich sonnig'), findsOneWidget);
     expect(find.text('10–10 °C'), findsOneWidget);
     expect(find.text('0,2 mm'), findsOneWidget);
-    expect(find.text('ab jetzt'), findsOneWidget);
+    expect(
+      find.text('ab jetzt'),
+      _fixtureForecastDayIndex(now) == 0 ? findsOneWidget : findsNothing,
+    );
     expect(find.text('7 km/h · SW'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('today-day-1')));
-    await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now, offset: 1);
     expect(find.text('20–20 °C'), findsOneWidget);
     expect(find.text('1,5 mm'), findsOneWidget);
     expect(find.text('ab jetzt'), findsNothing);
+  });
+
+  testWidgets('Konstanz opens official warning details from the warning tile', (
+    tester,
+  ) async {
+    final now = DateTime.now().toUtc();
+    final forecastService = DwdForecastService(
+      client: MockClient(
+        (_) async => http.Response.bytes(_kmz(_forecastKml(now)), 200),
+      ),
+    );
+    final warningService = OfficialWarningService(
+      client: MockClient((request) async {
+        if (request.url.host == '127.0.0.1') {
+          return http.Response.bytes(_warningZip(_dwdWarningCap(now)), 200);
+        }
+        return http.Response('{}', 200);
+      }),
+    );
+    expect((await warningService.loadDwdKonstanz()).warnings, hasLength(1));
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _scopedToday(
+        station: StationSelectionService(),
+        service: forecastService,
+        warningService: warningService,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now);
+
+    final warning = find.text('1 amtliche Warnung', skipOffstage: false);
+    expect(warning, findsOneWidget);
+    await tester.ensureVisible(warning);
+    await tester.tap(warning);
+    await tester.pumpAndSettle();
+    expect(find.text('AMTLICHE WARNUNGEN'), findsOneWidget);
+    expect(find.text('Gewitter'), findsOneWidget);
+    await tester.tap(find.byTooltip('Schließen'));
+    await tester.pumpAndSettle();
+    expect(find.text('AMTLICHE WARNUNGEN'), findsNothing);
+  });
+
+  testWidgets('Romanshorn marks official warnings as unavailable', (
+    tester,
+  ) async {
+    final selection = StationSelectionService()
+      ..select(BafuHydroService.romanshorn, persistLast: false);
+    final now = DateTime.now().toUtc();
+    final service = MeteoSwissForecastService(
+      client: MockClient(
+        (_) async =>
+            http.Response(jsonEncode(_meteoswissForecastPayload(now)), 200),
+      ),
+    );
+    await tester.pumpWidget(
+      _scopedToday(
+        station: selection,
+        service: DwdForecastService(),
+        meteoSwissService: service,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now);
+    expect(
+      find.text('Keine maschinenlesbaren Amtswarnungen', skipOffstage: false),
+      findsOneWidget,
+    );
   });
 
   testWidgets('Romanshorn shows the official BAFU level forecast by day', (
@@ -179,21 +264,64 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now);
 
-    expect(find.text('Prognose: GeoSphere Austria'), findsOneWidget);
+    expect(
+      find.text('Prognose: GeoSphere Austria', skipOffstage: false),
+      findsOneWidget,
+    );
     expect(find.text('10–10 °C'), findsOneWidget);
     expect(find.text('0,2 mm'), findsOneWidget);
     expect(find.text('7 km/h · N'), findsOneWidget);
     expect(find.text('14 km/h'), findsOneWidget);
     expect(find.text('Nicht verfügbar'), findsWidgets);
 
-    await tester.tap(find.byKey(const ValueKey('today-day-1')));
-    await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now, offset: 1);
     expect(find.text('20–20 °C'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('today-day-6')));
     await tester.pumpAndSettle();
     expect(find.text('Nicht verfügbar'), findsWidgets);
+  });
+
+  testWidgets('Bregenz shows GeoSphere warnings for the selected day', (
+    tester,
+  ) async {
+    final now = DateTime.now().toUtc();
+    final forecastService = GeoSphereForecastService(
+      client: MockClient(
+        (_) async =>
+            http.Response(jsonEncode(_geoSphereForecastPayload(now)), 200),
+      ),
+    );
+    final warningService = OfficialWarningService(
+      client: MockClient(
+        (_) async => http.Response(_geoSphereWarningPayload(now), 200),
+      ),
+    );
+    final selection = StationSelectionService()
+      ..select(VorarlbergHydroService.bregenz, persistLast: false);
+    await tester.pumpWidget(
+      _scopedToday(
+        station: selection,
+        service: DwdForecastService(),
+        geoSphereService: forecastService,
+        warningService: warningService,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now);
+
+    final warning = find.text('1 amtliche Warnung', skipOffstage: false);
+    expect(warning, findsOneWidget);
+    await tester.ensureVisible(warning);
+    await tester.tap(warning);
+    await tester.pumpAndSettle();
+    expect(find.text('Sturm'), findsOneWidget);
+    expect(
+      find.textContaining('Orange Warnung', skipOffstage: false),
+      findsWidgets,
+    );
   });
 
   testWidgets('Bregenz passes local water temperature only to today ratings', (
@@ -220,10 +348,17 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await _selectFixtureForecastDay(tester, now);
 
-    expect(find.text('22 °C Luft · 20 °C Wasser'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('today-day-1')));
-    await tester.pumpAndSettle();
+    if (_fixtureForecastDayIndex(now) == 0) {
+      expect(find.text('22 °C Luft · 20 °C Wasser'), findsOneWidget);
+    } else {
+      expect(
+        find.textContaining('Wassertemperatur nicht verfügbar'),
+        findsOneWidget,
+      );
+    }
+    await _selectFixtureForecastDay(tester, now, offset: 1);
     expect(
       find.textContaining('Wassertemperatur nicht verfügbar'),
       findsOneWidget,
@@ -276,6 +411,7 @@ void main() {
         _scopedToday(station: StationSelectionService(), service: service),
       );
       await tester.pumpAndSettle();
+      await _selectFixtureForecastDay(tester, DateTime.now().toUtc());
 
       expect(find.text('Noch keine Bewertung'), findsNothing);
       expect(find.text('Freizeit-Eignung aus Tagesprognosen'), findsOneWidget);
@@ -297,6 +433,7 @@ Widget _scopedToday({
   required DwdForecastService service,
   MeteoSwissForecastService? meteoSwissService,
   GeoSphereForecastService? geoSphereService,
+  OfficialWarningService? warningService,
   Future<BafuForecastData> Function()? bafuForecastLoader,
   Future<StationEnvironmentData> Function(PegelStation)? environmentLoader,
 }) => StationSelectionScope(
@@ -306,11 +443,67 @@ Widget _scopedToday({
       dwdForecastService: service,
       meteoSwissForecastService: meteoSwissService,
       geoSphereForecastService: geoSphereService,
+      officialWarningService: warningService,
       bafuForecastLoader: bafuForecastLoader,
       environmentLoader: environmentLoader,
     ),
   ),
 );
+
+Future<void> _selectFixtureForecastDay(
+  WidgetTester tester,
+  DateTime fixtureNow, {
+  int offset = 0,
+}) async {
+  final index = _fixtureForecastDayIndex(fixtureNow) + offset;
+  if (index <= 0) return;
+  await tester.tap(find.byKey(ValueKey('today-day-$index')));
+  await tester.pumpAndSettle();
+}
+
+int _fixtureForecastDayIndex(DateTime fixtureNow) {
+  final point = fixtureNow.add(const Duration(minutes: 10)).toLocal();
+  final today = DateTime.now();
+  final todayOnly = DateTime(today.year, today.month, today.day);
+  final pointOnly = DateTime(point.year, point.month, point.day);
+  return pointOnly.difference(todayOnly).inDays;
+}
+
+Uint8List _warningZip(String xml) {
+  final archive = Archive()
+    ..addFile(ArchiveFile('warning.xml', xml.length, utf8.encode(xml)));
+  return Uint8List.fromList(ZipEncoder().encode(archive));
+}
+
+String _dwdWarningCap(DateTime now) {
+  final start = now.add(const Duration(minutes: 10)).toIso8601String();
+  final end = now.add(const Duration(hours: 6)).toIso8601String();
+  return '''<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>test-warning</identifier><sent>${now.toIso8601String()}</sent>
+  <info><event>Gewitter</event><severity>Severe</severity><onset>$start</onset><expires>$end</expires>
+  <headline>Amtliche Gewitterwarnung</headline>
+  <area><areaDesc>Konstanz</areaDesc><geocode><valueName>WARNCELLID</valueName><value>808335043</value></geocode></area>
+  </info></alert>''';
+}
+
+String _geoSphereWarningPayload(DateTime now) => jsonEncode({
+  'properties': {
+    'location': {
+      'properties': {'name': 'Bregenz'},
+    },
+    'warnings': [
+      {
+        'warnid': 'fixture-storm',
+        'warnstufeid': 2,
+        'warntypid': 1,
+        'create': now.toIso8601String(),
+        'begin': now.add(const Duration(minutes: 5)).toIso8601String(),
+        'end': now.add(const Duration(hours: 4)).toIso8601String(),
+        'text': 'Amtliche Sturmwarnung',
+      },
+    ],
+  },
+});
 
 Map<String, dynamic> _meteoswissForecastPayload(DateTime now) {
   final first = now.add(const Duration(minutes: 10));
