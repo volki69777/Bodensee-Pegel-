@@ -175,6 +175,13 @@ abstract final class ActivityTimeWindowAggregation {
     required Iterable<ActivityTimeWindow> windows,
   }) => windows.map((window) => _aggregate(window, points)).toList();
 
+  /// A time-window chip is useful only when at least one original forecast
+  /// point falls within it. Individual missing parameters remain visible as
+  /// “–” per activity and are intentionally not filtered here.
+  static Iterable<ActivityTimeWindowForecast> withForecastPoints(
+    Iterable<ActivityTimeWindowForecast> forecasts,
+  ) => forecasts.where((forecast) => forecast.hasForecastPoints);
+
   static ActivityTimeWindowForecast _aggregate(
     ActivityTimeWindow window,
     Iterable<ActivityTimeWindowPoint> allPoints,

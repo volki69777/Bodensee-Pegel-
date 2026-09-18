@@ -5,6 +5,8 @@
 /// Gewässerbedingungen oder amtliche Warnlagen.
 library;
 
+import 'dart:math' as math;
+
 enum ActivityRatingLevel { veryGood, good, limited, unsuitable, unavailable }
 
 enum ActivityWarningSeverity { none, severe }
@@ -36,10 +38,14 @@ class ActivityForecastData {
 }
 
 class ActivityRating {
-  const ActivityRating(this.level, this.reason);
+  const ActivityRating(this.level, this.reason, {this.score});
 
   final ActivityRatingLevel level;
   final String reason;
+
+  /// Continuous 0–10 score constrained to this rating's existing category.
+  /// It stays null for an unavailable rating.
+  final double? score;
 
   String get label => switch (level) {
     ActivityRatingLevel.veryGood => 'Sehr gut',
@@ -82,7 +88,7 @@ abstract final class ActivityRatingService {
     }
     if (!_hasRelevantData(activityId, data)) return _unavailable;
 
-    return switch (activityId) {
+    final rating = switch (activityId) {
       'sup_kajak' => _sup(data),
       'segeln' => _sailing(data),
       'motorboot' => _motorboat(data),
@@ -93,12 +99,139 @@ abstract final class ActivityRatingService {
       'wandern' => _hiking(data),
       _ => _unavailable,
     };
+    return _withScore(activityId, data, rating);
   }
 
   static const _unavailable = ActivityRating(
     ActivityRatingLevel.unavailable,
     'Nicht genügend Wetterdaten verfügbar',
   );
+
+  /// Computes a continuous score from the same inputs as the existing
+  /// category rules. The category remains authoritative: the score is always
+  /// clamped into its category band and can therefore never imply another
+  /// rating level.
+  static ActivityRating _withScore(
+    String activityId,
+    ActivityForecastData data,
+    ActivityRating rating,
+  ) {
+    if (rating.level == ActivityRatingLevel.unavailable) return rating;
+
+    final raw = switch (activityId) {
+      'sup_kajak' => _weighted(<(double?, double)>[
+        (_descending(data.windKilometersPerHour, 12, 25), .45),
+        (_descending(data.gustKilometersPerHour, 20, 35), .30),
+        (_descending(data.precipitationMillimeters, 1, 8), .15),
+        (_ascending(data.temperatureMaximumCelsius, 8, 16), .10),
+      ]),
+      'segeln' => _weighted(<(double?, double)>[
+        (_range(data.windKilometersPerHour, 12, 28, 8, 45), .65),
+        (_descending(data.gustKilometersPerHour, 40, 55), .35),
+      ]),
+      'motorboot' => _weighted(<(double?, double)>[
+        (_descending(data.windKilometersPerHour, 20, 38), .45),
+        (_descending(data.gustKilometersPerHour, 30, 50), .30),
+        (_descending(data.precipitationMillimeters, 1, 8), .25),
+      ]),
+      'kiten' => _weighted(<(double?, double)>[
+        (_range(data.windKilometersPerHour, 25, 40, 15, 50), .70),
+        (
+          data.windKilometersPerHour == null ||
+                  data.gustKilometersPerHour == null
+              ? null
+              : _descending(
+                  data.gustKilometersPerHour! - data.windKilometersPerHour!,
+                  8,
+                  extremeGustinessDifferenceKilometersPerHour,
+                ),
+          .30,
+        ),
+      ]),
+      'angeln' => _weighted(<(double?, double)>[
+        (_descending(data.windKilometersPerHour, 15, 30), .40),
+        (_descending(data.gustKilometersPerHour, 30, 45), .25),
+        (_descending(data.precipitationMillimeters, 1, 8), .20),
+        (_fishingTemperatureScore(data), .15),
+      ]),
+      'baden' => _weighted(<(double?, double)>[
+        (_ascending(data.temperatureMaximumCelsius, 12, 22), .60),
+        (_ascending(data.waterTemperatureCelsius, 10, 20), .40),
+      ]),
+      // These two activities are intentionally retained for backwards
+      // compatible stored data, but are no longer visible in V1.
+      'radfahren' || 'wandern' => _weighted(<(double?, double)>[
+        (_descending(data.windKilometersPerHour, 20, 45), 1),
+      ]),
+      _ => null,
+    };
+    if (raw == null) return rating;
+    return ActivityRating(
+      rating.level,
+      rating.reason,
+      score: _clampToCategory(raw, rating.level),
+    );
+  }
+
+  /// Omits missing optional values and proportionally normalises what remains.
+  static double? _weighted(List<(double?, double)> factors) {
+    final available = factors.where((factor) => factor.$1 != null).toList();
+    if (available.isEmpty) return null;
+    final totalWeight = available.fold<double>(0, (sum, item) => sum + item.$2);
+    return available.fold<double>(
+      0,
+      (sum, item) => sum + item.$1! * item.$2 / totalWeight,
+    );
+  }
+
+  static double _clampToCategory(double raw, ActivityRatingLevel level) {
+    final (minimum, maximum) = switch (level) {
+      ActivityRatingLevel.veryGood => (8.0, 10.0),
+      ActivityRatingLevel.good => (6.0, 7.9),
+      ActivityRatingLevel.limited => (4.0, 5.9),
+      ActivityRatingLevel.unsuitable => (0.0, 3.9),
+      ActivityRatingLevel.unavailable => (0.0, 0.0),
+    };
+    return raw.clamp(minimum, maximum).toDouble();
+  }
+
+  static double? _ascending(double? value, double zeroAt, double tenAt) {
+    if (value == null) return null;
+    if (value <= zeroAt) return 0;
+    if (value >= tenAt) return 10;
+    return 10 * (value - zeroAt) / (tenAt - zeroAt);
+  }
+
+  static double? _descending(double? value, double tenAt, double zeroAt) {
+    if (value == null) return null;
+    if (value <= tenAt) return 10;
+    if (value >= zeroAt) return 0;
+    return 10 * (zeroAt - value) / (zeroAt - tenAt);
+  }
+
+  static double? _range(
+    double? value,
+    double idealMinimum,
+    double idealMaximum,
+    double outerMinimum,
+    double outerMaximum,
+  ) {
+    if (value == null) return null;
+    if (value >= idealMinimum && value <= idealMaximum) return 10;
+    if (value <= outerMinimum || value >= outerMaximum) return 0;
+    if (value < idealMinimum) {
+      return 10 * (value - outerMinimum) / (idealMinimum - outerMinimum);
+    }
+    return 10 * (outerMaximum - value) / (outerMaximum - idealMaximum);
+  }
+
+  static double? _fishingTemperatureScore(ActivityForecastData data) {
+    if (!data.hasTemperatureRange) return null;
+    return math.min(
+      _ascending(data.temperatureMinimumCelsius, 0, 8)!,
+      _descending(data.temperatureMaximumCelsius, 25, 33)!,
+    );
+  }
 
   /// Wind is the minimum for water and wind sports plus fishing. Cycling and
   /// hiking need wind or a full comfort-temperature range; swimming needs air

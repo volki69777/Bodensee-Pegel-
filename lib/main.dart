@@ -38,6 +38,14 @@ abstract final class AppColors {
   static const mist = Color(0xFFF5F8FD);
   static const green = Color(0xFF16B950);
   static const red = Color(0xFFC44040);
+
+  // Activity suitability colors are deliberately separate from the official
+  // warning card. Text and score always accompany the color.
+  static const activityVeryGood = Color(0xFF21864A);
+  static const activityGood = Color(0xFF4C9B62);
+  static const activityLimited = Color(0xFFB5691F);
+  static const activityUnsuitable = Color(0xFFC44040);
+  static const activityUnavailable = Color(0xFF71809A);
 }
 
 class StationReading {
@@ -159,6 +167,9 @@ enum AppDestination { today, live, analysis, map, more }
 /// Stable main-page paths used by Flutter Web while keeping mobile navigation
 /// on the same Navigator API.
 abstract final class AppRoutes {
+  static const activitiesPath = '/aktivitaeten';
+
+  /// Kept for existing bookmarks and old web links.
   static const todayPath = '/heute';
   static const livePath = '/live';
   static const analysisPath = '/analyse';
@@ -166,7 +177,7 @@ abstract final class AppRoutes {
   static const morePath = '/mehr';
 
   static String pathFor(AppDestination destination) => switch (destination) {
-    AppDestination.today => todayPath,
+    AppDestination.today => activitiesPath,
     AppDestination.live => livePath,
     AppDestination.analysis => analysisPath,
     AppDestination.map => mapPath,
@@ -174,7 +185,7 @@ abstract final class AppRoutes {
   };
 
   static AppDestination? destinationForPath(String? path) => switch (path) {
-    todayPath => AppDestination.today,
+    activitiesPath || todayPath => AppDestination.today,
     livePath || '/' || '' => AppDestination.live,
     analysisPath => AppDestination.analysis,
     mapPath => AppDestination.map,
@@ -894,7 +905,7 @@ class _TodayPageState extends State<TodayPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'HEUTE',
+                    'AKTIVITÄTEN',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 28,
@@ -1179,7 +1190,9 @@ class _TodayPageState extends State<TodayPage> {
           )
         : const <ActivityTimeWindowForecast>[];
     final timeWindowRatings = <ActivityTimeWindow, Map<String, ActivityRating>>{
-      for (final forecast in timeWindowForecasts)
+      for (final forecast in ActivityTimeWindowAggregation.withForecastPoints(
+        timeWindowForecasts,
+      ))
         forecast.window: {
           for (final activity in activities)
             activity.id: ActivityRatingService.rate(
@@ -2105,7 +2118,9 @@ class _TodayActivityRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SizedBox(
     key: ValueKey('today-activity-${activity.id}'),
-    height: timeWindowRatings.isEmpty ? 54 : 84,
+    // Three upcoming intervals can wrap onto two compact chip rows on narrow
+    // phones. Reserve their real height instead of clipping the last row.
+    height: timeWindowRatings.isEmpty ? 54 : 104,
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -2137,7 +2152,7 @@ class _TodayActivityRow extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(
-                    rating.label,
+                    _scoreLabel(rating),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     textAlign: TextAlign.right,
@@ -2210,7 +2225,7 @@ class _TimeWindowRatingChip extends StatelessWidget {
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: Text(window.label),
-          content: Text('${rating.label}\n${rating.reason}'),
+          content: Text('${_scoreDetail(rating)}\n${rating.reason}'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
@@ -2227,7 +2242,7 @@ class _TimeWindowRatingChip extends StatelessWidget {
           border: Border.all(color: const Color(0xFFDCE8F7)),
         ),
         child: Text(
-          '${window.label} ${rating.shortLabel}',
+          '${window.label} · ${_timeWindowScoreLabel(rating)}',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
@@ -2333,12 +2348,27 @@ class _WeeklyPlannerSection extends StatelessWidget {
   );
 }
 
+String _scoreLabel(ActivityRating rating) => rating.score == null
+    ? rating.label
+    : '${rating.score!.toStringAsFixed(1).replaceAll('.', ',')} · ${rating.label}';
+
+String _scoreDetail(ActivityRating rating) => rating.score == null
+    ? rating.label
+    : '${rating.score!.toStringAsFixed(1).replaceAll('.', ',')} von 10 · ${rating.label}';
+
+String _weeklyScoreLabel(ActivityRating rating) =>
+    rating.score == null ? '–' : rating.score!.round().toString();
+
+String _timeWindowScoreLabel(ActivityRating rating) => rating.score == null
+    ? '–'
+    : rating.score!.toStringAsFixed(1).replaceAll('.', ',');
+
 Color _ratingColor(ActivityRatingLevel level) => switch (level) {
-  ActivityRatingLevel.veryGood => AppColors.blue,
-  ActivityRatingLevel.good => AppColors.deepBlue,
-  ActivityRatingLevel.limited => const Color(0xFF59718E),
-  ActivityRatingLevel.unsuitable => const Color(0xFF425B78),
-  ActivityRatingLevel.unavailable => const Color(0xFF71809A),
+  ActivityRatingLevel.veryGood => AppColors.activityVeryGood,
+  ActivityRatingLevel.good => AppColors.activityGood,
+  ActivityRatingLevel.limited => AppColors.activityLimited,
+  ActivityRatingLevel.unsuitable => AppColors.activityUnsuitable,
+  ActivityRatingLevel.unavailable => AppColors.activityUnavailable,
 };
 
 class _PlannerRatingCell extends StatelessWidget {
@@ -2350,15 +2380,32 @@ class _PlannerRatingCell extends StatelessWidget {
   Widget build(BuildContext context) => SizedBox(
     height: 36,
     child: Center(
-      child: Tooltip(
-        message: '${rating.label}: ${rating.reason}',
-        child: Text(
-          rating.shortLabel,
-          maxLines: 1,
-          style: TextStyle(
-            color: _ratingColor(rating.level),
-            fontSize: 9,
-            fontWeight: FontWeight.w900,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => showDialog<void>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Aktivitätsbewertung'),
+              content: Text('${_scoreDetail(rating)}\n${rating.reason}'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Schließen'),
+                ),
+              ],
+            ),
+          ),
+          child: Center(
+            child: Text(
+              _weeklyScoreLabel(rating),
+              maxLines: 1,
+              style: TextStyle(
+                color: _ratingColor(rating.level),
+                fontSize: 9,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
           ),
         ),
       ),
@@ -7013,7 +7060,7 @@ class _BottomNavigation extends StatelessWidget {
             child: _NavItem(
               key: const ValueKey('nav-today'),
               icon: Icons.calendar_today_rounded,
-              label: 'Heute',
+              label: 'Aktivitäten',
               active: todayActive,
               onTap: onToday,
             ),
@@ -7107,11 +7154,18 @@ class _NavItem extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 2),
-        Text(
-          label,
-          style: TextStyle(
-            color: active ? AppColors.blue : AppColors.navy,
-            fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+        SizedBox(
+          width: 74,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              maxLines: 1,
+              style: TextStyle(
+                color: active ? AppColors.blue : AppColors.navy,
+                fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+              ),
+            ),
           ),
         ),
       ],

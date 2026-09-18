@@ -40,6 +40,7 @@ void main() {
     WidgetTester tester,
   ) async {
     final cases = <({String path, Type pageType})>[
+      (path: '/aktivitaeten', pageType: TodayPage),
       (path: '/heute', pageType: TodayPage),
       (path: '/live', pageType: DashboardPage),
       (path: '/analyse', pageType: AnalysisPage),
@@ -81,7 +82,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('nav-today')));
     await tester.pumpAndSettle();
-    expect(observer.lastRouteName, '/heute');
+    expect(observer.lastRouteName, '/aktivitaeten');
 
     await tester.tap(find.byKey(const ValueKey('nav-analysis')));
     await tester.pumpAndSettle();
@@ -103,6 +104,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('nav-today')));
     await tester.pumpAndSettle();
     expect(find.byType(TodayPage), findsOneWidget);
+    expect(find.text('AKTIVITÄTEN'), findsOneWidget);
+    expect(find.text('Aktivitäten'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('nav-live')));
     await tester.pumpAndSettle();

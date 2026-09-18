@@ -415,7 +415,7 @@ void main() {
 
       expect(find.text('Noch keine Bewertung'), findsNothing);
       expect(find.text('Freizeit-Eignung aus Tagesprognosen'), findsOneWidget);
-      expect(find.text('Sehr gut'), findsWidgets);
+      expect(find.textContaining('· Sehr gut'), findsWidgets);
       expect(
         find.byKey(const ValueKey('today-activity-sup_kajak')),
         findsOneWidget,
@@ -424,6 +424,19 @@ void main() {
         find.byKey(const ValueKey('weekly-planner-table')),
         findsOneWidget,
       );
+      final weeklyTable = find.byKey(const ValueKey('weekly-planner-table'));
+      await tester.ensureVisible(weeklyTable);
+      final wholeScore = find.descendant(
+        of: weeklyTable,
+        matching: find.text('10'),
+      );
+      expect(wholeScore, findsWidgets);
+      await tester.tap(wholeScore.first);
+      await tester.pumpAndSettle();
+      expect(find.text('Aktivitätsbewertung'), findsOneWidget);
+      expect(find.textContaining('von 10 ·'), findsOneWidget);
+      await tester.tap(find.text('Schließen'));
+      await tester.pumpAndSettle();
     },
   );
 
@@ -456,10 +469,15 @@ void main() {
 
     final chip = find.byKey(const ValueKey('time-window-sup_kajak-Jetzt–12'));
     expect(chip, findsOneWidget);
+    expect(
+      find.descendant(of: chip, matching: find.textContaining(' · ')),
+      findsOneWidget,
+    );
     await tester.ensureVisible(chip);
     await tester.tap(chip);
     await tester.pumpAndSettle();
     expect(find.text('Jetzt–12'), findsOneWidget);
+    expect(find.textContaining('von 10 ·'), findsOneWidget);
     expect(
       find.descendant(
         of: find.byType(AlertDialog),

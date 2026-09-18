@@ -139,6 +139,10 @@ void main() {
           points: [_point(_berlinUtc(2026, 9, 14, 9), wind: 8)],
         ).single;
         expect(noRain.precipitationMillimeters, isNull);
+        expect(
+          ActivityTimeWindowAggregation.withForecastPoints([noRain]),
+          contains(noRain),
+        );
       },
     );
 
@@ -202,6 +206,10 @@ void main() {
         ).single;
         expect(result.hasForecastPoints, isFalse);
         expect(result.temperatureMaximumCelsius, isNull);
+        expect(
+          ActivityTimeWindowAggregation.withForecastPoints([result]),
+          isEmpty,
+        );
       },
     );
   });
