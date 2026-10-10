@@ -437,12 +437,15 @@ class _DashboardPageState extends State<DashboardPage> {
         StationSource.pegelOnline => _insightService.fromKonstanz(
           change24HoursCm: live.change24Hours,
         ),
-        StationSource.bafu => _insightService.fromRomanshorn(
-          change24HoursCm: live.change24Hours,
-          seasonalReference: await _seasonalReferenceOrNull(),
-          forecast: live.forecast,
-          currentTimestamp: live.current.timestamp,
-        ),
+        StationSource.bafu =>
+          station.uuid == BafuHydroService.romanshorn.uuid
+              ? _insightService.fromRomanshorn(
+                  change24HoursCm: live.change24Hours,
+                  seasonalReference: await _seasonalReferenceOrNull(),
+                  forecast: live.forecast,
+                  currentTimestamp: live.current.timestamp,
+                )
+              : null,
         StationSource.vorarlberg => _insightService.fromBregenz(
           change7DaysCm: await _bregenz7DayChangeOrNull(station),
         ),
@@ -481,24 +484,28 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Future<StationLiveData> _loadLiveData(PegelStation station) async {
     if (station.source == StationSource.bafu) {
-      final liveData = await _bafuService.fetchRomanshornLiveData();
+      final liveData = await _bafuService.fetchLiveData(station);
       BafuForecastData? forecast;
       try {
-        forecast = await _bafuService.fetchRomanshornForecast();
+        forecast = await _bafuService.fetchForecast(station);
       } on BafuHydroException {
         // The independent live measurement remains visible without a forecast.
       }
       final reference = station.waterLevelReferenceMasl;
-      if (reference == null) throw const BafuHydroException();
+      final usesCentimeters = reference != null;
       return StationLiveData(
         current: StationReading(
-          value: _waterLevelCm(liveData.current.waterLevelMasl, reference),
+          value: usesCentimeters
+              ? _waterLevelCm(liveData.current.waterLevelMasl, reference)
+              : liveData.current.waterLevelMasl,
           timestamp: liveData.current.timestamp,
         ),
         history24Hours: liveData.history24Hours
             ?.map(
               (reading) => StationReading(
-                value: _waterLevelCm(reading.waterLevelMasl, reference),
+                value: usesCentimeters
+                    ? _waterLevelCm(reading.waterLevelMasl, reference)
+                    : reading.waterLevelMasl,
                 timestamp: reading.timestamp,
               ),
             )
@@ -506,11 +513,12 @@ class _DashboardPageState extends State<DashboardPage> {
         change24Hours: liveData.change24Hours == null
             ? null
             : liveData.change24Hours! * 100,
-        unit: 'cm',
-        fractionDigits: 0,
+        unit: usesCentimeters ? 'cm' : 'm ü. M.',
+        fractionDigits: usesCentimeters ? 0 : 2,
         changeFractionDigits: 1,
-        originalWaterLevelLabel:
-            '${liveData.current.waterLevelMasl.toStringAsFixed(3).replaceAll('.', ',')} m ü. M.',
+        originalWaterLevelLabel: usesCentimeters
+            ? '${liveData.current.waterLevelMasl.toStringAsFixed(3).replaceAll('.', ',')} m ü. M.'
+            : null,
         forecast: forecast,
       );
     }
@@ -659,6 +667,7 @@ class TodayPage extends StatefulWidget {
     super.key,
     this.dwdForecastService,
     this.meteoSwissForecastService,
+    this.berlingenMeteoSwissForecastService,
     this.geoSphereForecastService,
     this.officialWarningService,
     this.bafuForecastLoader,
@@ -668,6 +677,7 @@ class TodayPage extends StatefulWidget {
 
   final DwdForecastService? dwdForecastService;
   final MeteoSwissForecastService? meteoSwissForecastService;
+  final MeteoSwissForecastService? berlingenMeteoSwissForecastService;
   final GeoSphereForecastService? geoSphereForecastService;
   final OfficialWarningService? officialWarningService;
   final Future<BafuForecastData> Function()? bafuForecastLoader;
@@ -685,6 +695,7 @@ class _TodayPageState extends State<TodayPage> {
   final _activitiesBoatsService = ActivitiesBoatsService();
   late final DwdForecastService _dwdForecastService;
   late final MeteoSwissForecastService _meteoSwissForecastService;
+  late final MeteoSwissForecastService _berlingenMeteoSwissForecastService;
   late final GeoSphereForecastService _geoSphereForecastService;
   late final OfficialWarningService _officialWarningService;
   late final Future<BafuForecastData> Function() _bafuForecastLoader;
@@ -696,6 +707,7 @@ class _TodayPageState extends State<TodayPage> {
   late DateTime _selectedDate;
   Future<DwdMosmixForecast>? _dwdForecast;
   Future<MeteoSwissForecast>? _meteoSwissForecast;
+  Future<MeteoSwissForecast>? _berlingenMeteoSwissForecast;
   Future<GeoSphereForecast>? _geoSphereForecast;
   Future<OfficialWarnings>? _officialWarnings;
   OfficialWarningSource? _warningSource;
@@ -710,6 +722,9 @@ class _TodayPageState extends State<TodayPage> {
     _dwdForecastService = widget.dwdForecastService ?? DwdForecastService();
     _meteoSwissForecastService =
         widget.meteoSwissForecastService ?? MeteoSwissForecastService();
+    _berlingenMeteoSwissForecastService =
+        widget.berlingenMeteoSwissForecastService ??
+        MeteoSwissForecastService(station: MeteoSwissForecastStation.berlingen);
     _geoSphereForecastService =
         widget.geoSphereForecastService ?? GeoSphereForecastService();
     _officialWarningService =
@@ -778,6 +793,7 @@ class _TodayPageState extends State<TodayPage> {
         );
       }
       _meteoSwissForecast = null;
+      _berlingenMeteoSwissForecast = null;
       _bafuForecast = null;
       _geoSphereForecast = null;
       _bregenzEnvironment = null;
@@ -801,6 +817,7 @@ class _TodayPageState extends State<TodayPage> {
         );
       }
       _dwdForecast = null;
+      _berlingenMeteoSwissForecast = null;
       _geoSphereForecast = null;
       _bregenzEnvironment = null;
       // MeteoSwiss has no documented, public machine-readable warning feed.
@@ -818,9 +835,33 @@ class _TodayPageState extends State<TodayPage> {
           ),
         );
       }
+    } else if (_station.uuid == BafuHydroService.berlingen.uuid) {
+      if (_berlingenMeteoSwissForecast == null) {
+        final future = _berlingenMeteoSwissForecastService.load();
+        _berlingenMeteoSwissForecast = future;
+        unawaited(
+          future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+        );
+      }
+      _dwdForecast = null;
+      _meteoSwissForecast = null;
+      _geoSphereForecast = null;
+      _bregenzEnvironment = null;
+      _officialWarnings = null;
+      _warningSource = null;
+      if (_bafuForecast == null) {
+        final future = BafuHydroService().fetchForecast(
+          BafuHydroService.berlingen,
+        );
+        _bafuForecast = future;
+        unawaited(
+          future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+        );
+      }
     } else {
       _dwdForecast = null;
       _meteoSwissForecast = null;
+      _berlingenMeteoSwissForecast = null;
       _bafuForecast = null;
       if (_warningSource != OfficialWarningSource.geoSphere) {
         _warningSource = OfficialWarningSource.geoSphere;
@@ -978,9 +1019,12 @@ class _TodayPageState extends State<TodayPage> {
         },
       );
     }
-    if (isRomanshorn) {
+    final isBerlingen = _station.uuid == BafuHydroService.berlingen.uuid;
+    if (isRomanshorn || isBerlingen) {
       return FutureBuilder<MeteoSwissForecast>(
-        future: _meteoSwissForecast,
+        future: isRomanshorn
+            ? _meteoSwissForecast
+            : _berlingenMeteoSwissForecast,
         builder: (context, snapshot) {
           if (snapshot.connectionState != ConnectionState.done) {
             return _TodayOverviewCard(
@@ -1022,7 +1066,7 @@ class _TodayPageState extends State<TodayPage> {
                       : _TodayForecastState.unavailable,
                   waterLevelForecast: point == null
                       ? null
-                      : _TodayWaterLevelForecast.fromBafu(point),
+                      : _TodayWaterLevelForecast.fromBafu(point, _station),
                   waterLevelForecastLoading:
                       bafuSnapshot.connectionState != ConnectionState.done,
                   warningsUnavailable: true,
@@ -1100,9 +1144,12 @@ class _TodayPageState extends State<TodayPage> {
         ),
       );
     }
-    if (_station.uuid == BafuHydroService.romanshorn.uuid) {
+    if (_station.uuid == BafuHydroService.romanshorn.uuid ||
+        _station.uuid == BafuHydroService.berlingen.uuid) {
       return FutureBuilder<MeteoSwissForecast>(
-        future: _meteoSwissForecast,
+        future: _station.uuid == BafuHydroService.romanshorn.uuid
+            ? _meteoSwissForecast
+            : _berlingenMeteoSwissForecast,
         builder: (context, snapshot) => _activityPlannerContent(
           days: days,
           activities: activities,
@@ -1422,20 +1469,34 @@ class _TodayForecastValues {
 
 class _TodayWaterLevelForecast {
   const _TodayWaterLevelForecast({
-    required this.levelCentimeters,
+    required this.value,
+    required this.unit,
+    required this.fractionDigits,
     required this.timeLabel,
   });
 
-  factory _TodayWaterLevelForecast.fromBafu(BafuForecastPoint point) =>
-      _TodayWaterLevelForecast(
-        levelCentimeters: BafuForecastDaySelection.medianLevelCentimeters(
-          point,
-        ),
-        timeLabel: BafuForecastDaySelection.localTimeLabel(point),
-      );
+  factory _TodayWaterLevelForecast.fromBafu(
+    BafuForecastPoint point,
+    PegelStation station,
+  ) {
+    final reference = station.waterLevelReferenceMasl;
+    return _TodayWaterLevelForecast(
+      value: reference == null
+          ? point.medianMasl
+          : (point.medianMasl - reference) * 100,
+      unit: reference == null ? 'm ü. M.' : 'cm',
+      fractionDigits: reference == null ? 2 : 0,
+      timeLabel: BafuForecastDaySelection.localTimeLabel(point),
+    );
+  }
 
-  final double levelCentimeters;
+  final double value;
+  final String unit;
+  final int fractionDigits;
   final String timeLabel;
+
+  String get formattedValue =>
+      '${value.toStringAsFixed(fractionDigits).replaceAll('.', ',')} $unit';
 }
 
 class _ForecastOverviewWithSource extends StatelessWidget {
@@ -1660,7 +1721,7 @@ class _TodayOverviewCard extends StatelessWidget {
     final data = waterLevelForecast;
     if (data != null) {
       return _TodayMetricContent(
-        value: '${data.levelCentimeters.round()} cm',
+        value: data.formattedValue,
         detail: 'Prognose · ${data.timeLabel}',
       );
     }
@@ -2481,6 +2542,7 @@ class _MapPageState extends State<MapPage> {
     PegelOnlineService.konstanz,
     BafuHydroService.romanshorn,
     VorarlbergHydroService.bregenz,
+    BafuHydroService.berlingen,
   ];
   late Future<List<_MapStationData>> _data;
 
@@ -2544,7 +2606,7 @@ class _MapPageState extends State<MapPage> {
           children: [
             FlutterMap(
               options: const MapOptions(
-                // Framed so that all three supported stations remain visible
+                // Framed so that all supported stations remain visible
                 // while keeping the map focused on the Bodensee.
                 initialCenter: LatLng(47.58, 9.46),
                 initialZoom: 9.85,
@@ -2642,7 +2704,7 @@ class _MapMarker extends StatelessWidget {
   Widget build(BuildContext context) {
     final value = data.live == null
         ? '–'
-        : '${data.live!.formatValue(data.live!.current.value)} cm';
+        : '${data.live!.formatValue(data.live!.current.value)} ${data.live!.unit}';
     return InkWell(
       key: ValueKey('map-marker-${data.station.uuid}'),
       onTap: onTap,
@@ -2698,7 +2760,7 @@ class _MapStationPanel extends StatelessWidget {
     final change = live?.change24Hours;
     final level = live == null
         ? '–'
-        : '${live.formatValue(live.current.value)} cm';
+        : '${live.formatValue(live.current.value)} ${live.unit}';
     final changeText = change == null
         ? data.station.source == StationSource.vorarlberg
               ? '24 h nicht verfügbar'
@@ -2833,6 +2895,7 @@ class _MorePageState extends State<MorePage> {
     PegelOnlineService.konstanz,
     BafuHydroService.romanshorn,
     VorarlbergHydroService.bregenz,
+    BafuHydroService.berlingen,
   ];
 
   final _preferences = SharedPreferencesAsync();
@@ -3936,7 +3999,7 @@ const _moreSources = <_MoreSource>[
   _MoreSource(
     name: 'BAFU',
     data: 'Pegelstand, Historie, saisonale Referenz und Prognose',
-    stations: 'Romanshorn',
+    stations: 'Romanshorn · Berlingen',
     licence: 'Quelle: Abteilung Hydrologie, Bundesamt für Umwelt BAFU',
     url: 'https://www.hydrodaten.admin.ch/de/fragen',
   ),
@@ -3956,8 +4019,8 @@ const _moreSources = <_MoreSource>[
   ),
   _MoreSource(
     name: 'MeteoSwiss',
-    data: 'Wind und Lufttemperatur',
-    stations: 'Romanshorn · Station Güttingen',
+    data: 'Lokale Wetterprognose',
+    stations: 'Romanshorn · Berlingen',
     licence: 'CC BY 4.0 · Quelle: MeteoSwiss',
     url: 'https://www.meteoswiss.admin.ch/services-and-publications/service/open-data.html',
   ),
@@ -3983,6 +4046,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
     PegelOnlineService.konstanz,
     BafuHydroService.romanshorn,
     VorarlbergHydroService.bregenz,
+    BafuHydroService.berlingen,
   ];
   PegelStation _station = PegelOnlineService.konstanz;
   late AnalysisPeriod _period;
@@ -4265,7 +4329,7 @@ class _AnalysisContent extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'PEGELVERLAUF · ${series.period.label.toUpperCase()}',
+                'PEGELVERLAUF · ${series.period.label.toUpperCase()} · ${station.unit}',
                 style: const TextStyle(
                   color: AppColors.deepBlue,
                   fontSize: 16,
@@ -4274,7 +4338,7 @@ class _AnalysisContent extends StatelessWidget {
               ),
               const SizedBox(height: 15),
               if (annual != null)
-                _AnnualAnalysisChart(comparison: annual)
+                _AnnualAnalysisChart(comparison: annual, station: station)
               else
                 SizedBox(
                   height: 285,
@@ -4289,6 +4353,7 @@ class _AnalysisContent extends StatelessWidget {
         const SizedBox(height: 18),
         annual == null
             ? _AnalysisMetrics(
+                station: station,
                 current: readings.last.valueCm,
                 minimum: minimum,
                 maximum: maximum,
@@ -4296,6 +4361,7 @@ class _AnalysisContent extends StatelessWidget {
                 period: series.period,
               )
             : _AnnualAnalysisMetrics(
+                station: station,
                 summary: AnnualAnalysisSummary.from(annual),
                 referenceLabel: annual.referenceLabel,
               ),
@@ -4313,10 +4379,12 @@ class _AnalysisContent extends StatelessWidget {
 
 class _AnnualAnalysisMetrics extends StatelessWidget {
   const _AnnualAnalysisMetrics({
+    required this.station,
     required this.summary,
     required this.referenceLabel,
   });
 
+  final PegelStation station;
   final AnnualAnalysisSummary summary;
   final String referenceLabel;
 
@@ -4331,19 +4399,19 @@ class _AnnualAnalysisMetrics extends StatelessWidget {
       decoration: _cardDecoration(radius: 22),
       child: Row(
         children: [
-          _Metric(label: 'AKTUELL', value: _cm(summary.currentCm)),
+          _Metric(label: 'AKTUELL', value: _level(summary.currentCm)),
           const VerticalDivider(
             width: 1,
             thickness: 1,
             color: Color(0xFFE1E9F4),
           ),
-          _Metric(label: 'MINIMUM', value: _cm(summary.minimumCm)),
+          _Metric(label: 'MINIMUM', value: _level(summary.minimumCm)),
           const VerticalDivider(
             width: 1,
             thickness: 1,
             color: Color(0xFFE1E9F4),
           ),
-          _Metric(label: 'MAXIMUM', value: _cm(summary.maximumCm)),
+          _Metric(label: 'MAXIMUM', value: _level(summary.maximumCm)),
           const VerticalDivider(
             width: 1,
             thickness: 1,
@@ -4353,7 +4421,7 @@ class _AnnualAnalysisMetrics extends StatelessWidget {
             label: shortReference,
             value: difference == null
                 ? '–'
-                : '${difference >= 0 ? '+' : ''}${_cm(difference)}',
+                : '${difference >= 0 ? '+' : ''}${_change(difference)}',
             accent: AppColors.navy,
           ),
         ],
@@ -4365,6 +4433,12 @@ class _AnnualAnalysisMetrics extends StatelessWidget {
     final digits = value == value.roundToDouble() ? 0 : 1;
     return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
   }
+
+  String _level(double value) => station.waterLevelReferenceMasl == null
+      ? '${value.toStringAsFixed(2).replaceAll('.', ',')} m ü. M.'
+      : _cm(value);
+  String _change(double value) =>
+      station.waterLevelReferenceMasl == null ? _cm(value * 100) : _cm(value);
 }
 
 class _AnnualLegend extends StatelessWidget {
@@ -4439,6 +4513,7 @@ class _LegendItem extends StatelessWidget {
 
 class _AnalysisMetrics extends StatelessWidget {
   const _AnalysisMetrics({
+    required this.station,
     required this.current,
     required this.minimum,
     required this.maximum,
@@ -4446,6 +4521,7 @@ class _AnalysisMetrics extends StatelessWidget {
     required this.period,
   });
 
+  final PegelStation station;
   final double current;
   final double minimum;
   final double maximum;
@@ -4458,15 +4534,15 @@ class _AnalysisMetrics extends StatelessWidget {
     decoration: _cardDecoration(radius: 22),
     child: Row(
       children: [
-        _Metric(label: 'AKTUELL', value: _cm(current)),
+        _Metric(label: 'AKTUELL', value: _level(current)),
         const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFE1E9F4)),
-        _Metric(label: 'MINIMUM', value: _cm(minimum)),
+        _Metric(label: 'MINIMUM', value: _level(minimum)),
         const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFE1E9F4)),
-        _Metric(label: 'MAXIMUM', value: _cm(maximum)),
+        _Metric(label: 'MAXIMUM', value: _level(maximum)),
         const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFE1E9F4)),
         _Metric(
           label: 'ÄNDERUNG',
-          value: '${change >= 0 ? '+' : ''}${_cm(change)}',
+          value: '${change >= 0 ? '+' : ''}${_change(change)}',
           accent: change < 0 ? AppColors.red : AppColors.green,
         ),
       ],
@@ -4477,6 +4553,12 @@ class _AnalysisMetrics extends StatelessWidget {
     final digits = value == value.roundToDouble() ? 0 : 1;
     return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
   }
+
+  String _level(double value) => station.waterLevelReferenceMasl == null
+      ? '${value.toStringAsFixed(2).replaceAll('.', ',')} m ü. M.'
+      : _cm(value);
+  String _change(double value) =>
+      station.waterLevelReferenceMasl == null ? _cm(value * 100) : _cm(value);
 }
 
 class _Metric extends StatelessWidget {
@@ -4527,7 +4609,7 @@ class _ReferenceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isRomanshorn = station.source == StationSource.bafu;
+    final isRomanshorn = station.uuid == BafuHydroService.romanshorn.uuid;
     final reference = seasonalReference;
     final text = isRomanshorn
         ? _seasonalText(reference)
@@ -4602,9 +4684,10 @@ class _ReferenceCard extends StatelessWidget {
 }
 
 class _AnnualAnalysisChart extends StatefulWidget {
-  const _AnnualAnalysisChart({required this.comparison});
+  const _AnnualAnalysisChart({required this.comparison, required this.station});
 
   final AnnualComparison comparison;
+  final PegelStation station;
 
   @override
   State<_AnnualAnalysisChart> createState() => _AnnualAnalysisChartState();
@@ -4665,6 +4748,7 @@ class _AnnualAnalysisChartState extends State<_AnnualAnalysisChart> {
                 right: 2,
                 child: _AnnualTooltip(
                   comparison: widget.comparison,
+                  station: widget.station,
                   selected: _selected!,
                 ),
               ),
@@ -4676,10 +4760,15 @@ class _AnnualAnalysisChartState extends State<_AnnualAnalysisChart> {
 }
 
 class _AnnualTooltip extends StatelessWidget {
-  const _AnnualTooltip({required this.comparison, required this.selected});
+  const _AnnualTooltip({
+    required this.comparison,
+    required this.selected,
+    required this.station,
+  });
 
   final AnnualComparison comparison;
   final AnalysisReading selected;
+  final PegelStation station;
 
   @override
   Widget build(BuildContext context) {
@@ -4711,10 +4800,10 @@ class _AnnualTooltip extends StatelessWidget {
           children: [
             Text(_date(selected.timestamp)),
             const SizedBox(height: 3),
-            Text('Aktuell: ${_cm(selected.valueCm)}'),
-            if (previous != null) Text('Vorjahr: ${_cm(previous)}'),
+            Text('Aktuell: ${_level(selected.valueCm)}'),
+            if (previous != null) Text('Vorjahr: ${_level(previous)}'),
             if (reference != null)
-              Text('${comparison.referenceLabel}: ${_cm(reference)}'),
+              Text('${comparison.referenceLabel}: ${_level(reference)}'),
           ],
         ),
       ),
@@ -4739,6 +4828,10 @@ class _AnnualTooltip extends StatelessWidget {
     final digits = value == value.roundToDouble() ? 0 : 1;
     return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
   }
+
+  String _level(double value) => station.waterLevelReferenceMasl == null
+      ? '${value.toStringAsFixed(2).replaceAll('.', ',')} m ü. M.'
+      : _cm(value);
 }
 
 class _AnnualChartPainter extends CustomPainter {
@@ -5943,8 +6036,6 @@ class ForecastCard extends StatelessWidget {
   final BafuForecastData? forecast;
   final bool waiting;
 
-  static const _referenceMasl = BafuHydroService.romanshornReferenceMasl;
-
   @override
   Widget build(BuildContext context) {
     if (station.source != StationSource.bafu) {
@@ -5994,14 +6085,21 @@ class ForecastCard extends StatelessWidget {
             children: [
               SizedBox(
                 width: 110,
-                child: _NextForecastValue(point: tomorrow, trend: trend),
+                child: _NextForecastValue(
+                  point: tomorrow,
+                  trend: trend,
+                  station: station,
+                ),
               ),
               const SizedBox(width: 14),
               Expanded(
                 child: SizedBox(
                   height: 146,
                   child: CustomPaint(
-                    painter: _ForecastChartPainter(data.points, _referenceMasl),
+                    painter: _ForecastChartPainter(
+                      data.points,
+                      station.waterLevelReferenceMasl,
+                    ),
                     child: const SizedBox.expand(),
                   ),
                 ),
@@ -6020,7 +6118,8 @@ class ForecastCard extends StatelessWidget {
               key: const ValueKey('forecast-detail-button'),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => ForecastDetailPage(forecast: data),
+                  builder: (_) =>
+                      ForecastDetailPage(forecast: data, station: station),
                 ),
               ),
               borderRadius: BorderRadius.circular(11),
@@ -6079,15 +6178,21 @@ class ForecastCard extends StatelessWidget {
 }
 
 class _NextForecastValue extends StatelessWidget {
-  const _NextForecastValue({required this.point, required this.trend});
+  const _NextForecastValue({
+    required this.point,
+    required this.trend,
+    required this.station,
+  });
 
   final BafuForecastPoint point;
   final String trend;
+  final PegelStation station;
 
   @override
   Widget build(BuildContext context) {
-    final levelCm =
-        (point.medianMasl - BafuHydroService.romanshornReferenceMasl) * 100;
+    final value = station.waterLevelReferenceMasl == null
+        ? point.medianMasl
+        : (point.medianMasl - station.waterLevelReferenceMasl!) * 100;
     final local = point.timestamp.toLocal();
     final time =
         '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')} · '
@@ -6110,7 +6215,9 @@ class _NextForecastValue extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          '${levelCm.round()}',
+          station.waterLevelReferenceMasl == null
+              ? value.toStringAsFixed(2).replaceAll('.', ',')
+              : '${value.round()}',
           style: const TextStyle(
             color: AppColors.navy,
             fontSize: 42,
@@ -6119,8 +6226,8 @@ class _NextForecastValue extends StatelessWidget {
             letterSpacing: -2,
           ),
         ),
-        const Text(
-          'cm',
+        Text(
+          station.unit,
           style: TextStyle(
             color: AppColors.navy,
             fontSize: 19,
@@ -6156,9 +6263,14 @@ class _NextForecastValue extends StatelessWidget {
 }
 
 class ForecastDetailPage extends StatefulWidget {
-  const ForecastDetailPage({super.key, required this.forecast});
+  const ForecastDetailPage({
+    super.key,
+    required this.forecast,
+    required this.station,
+  });
 
   final BafuForecastData forecast;
+  final PegelStation station;
 
   @override
   State<ForecastDetailPage> createState() => _ForecastDetailPageState();
@@ -6291,8 +6403,7 @@ class _ForecastDetailPageState extends State<ForecastDetailPage> {
                                     child: CustomPaint(
                                       painter: _ForecastDetailChartPainter(
                                         widget.forecast.points,
-                                        BafuHydroService
-                                            .romanshornReferenceMasl,
+                                        widget.station.waterLevelReferenceMasl,
                                         _selectedPoint,
                                       ),
                                     ),
@@ -6303,6 +6414,7 @@ class _ForecastDetailPageState extends State<ForecastDetailPage> {
                                       right: 4,
                                       child: _ForecastDetailTooltip(
                                         point: _selectedPoint!,
+                                        station: widget.station,
                                       ),
                                     ),
                                 ],
@@ -6312,7 +6424,10 @@ class _ForecastDetailPageState extends State<ForecastDetailPage> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      _ForecastDetailSummary(points: widget.forecast.points),
+                      _ForecastDetailSummary(
+                        points: widget.forecast.points,
+                        station: widget.station,
+                      ),
                       const SizedBox(height: 14),
                       const Text(
                         'Quelle: BAFU',
@@ -6335,17 +6450,16 @@ class _ForecastDetailPageState extends State<ForecastDetailPage> {
 }
 
 class _ForecastDetailSummary extends StatelessWidget {
-  const _ForecastDetailSummary({required this.points});
+  const _ForecastDetailSummary({required this.points, required this.station});
 
   final List<BafuForecastPoint> points;
-
-  static const _referenceMasl = BafuHydroService.romanshornReferenceMasl;
+  final PegelStation station;
 
   @override
   Widget build(BuildContext context) {
-    final start = (points.first.medianMasl - _referenceMasl) * 100;
-    final end = (points.last.medianMasl - _referenceMasl) * 100;
-    final change = end - start;
+    final start = _level(points.first.medianMasl);
+    final end = _level(points.last.medianMasl);
+    final change = (points.last.medianMasl - points.first.medianMasl) * 100;
     final trend = change > .5
         ? 'Langsam steigend'
         : change < -.5
@@ -6362,7 +6476,7 @@ class _ForecastDetailSummary extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Start ${_cm(start)} → Ende ${_cm(end)}',
+            'Start ${_formattedLevel(start)} → Ende ${_formattedLevel(end)}',
             style: const TextStyle(
               color: AppColors.navy,
               fontSize: 15,
@@ -6392,14 +6506,21 @@ class _ForecastDetailSummary extends StatelessWidget {
     final digits = value == value.roundToDouble() ? 0 : 1;
     return '${value.toStringAsFixed(digits).replaceAll('.', ',')} cm';
   }
+
+  double _level(double valueMasl) => station.waterLevelReferenceMasl == null
+      ? valueMasl
+      : (valueMasl - station.waterLevelReferenceMasl!) * 100;
+  String _formattedLevel(double value) =>
+      station.waterLevelReferenceMasl == null
+      ? '${value.toStringAsFixed(2).replaceAll('.', ',')} m ü. M.'
+      : _cm(value);
 }
 
 class _ForecastDetailTooltip extends StatelessWidget {
-  const _ForecastDetailTooltip({required this.point});
+  const _ForecastDetailTooltip({required this.point, required this.station});
 
   final BafuForecastPoint point;
-
-  static const _referenceMasl = BafuHydroService.romanshornReferenceMasl;
+  final PegelStation station;
 
   @override
   Widget build(BuildContext context) {
@@ -6443,7 +6564,11 @@ class _ForecastDetailTooltip extends StatelessWidget {
   }
 
   String _cm(double valueMasl) {
-    final cm = (valueMasl - _referenceMasl) * 100;
+    final reference = station.waterLevelReferenceMasl;
+    if (reference == null) {
+      return '${valueMasl.toStringAsFixed(2).replaceAll('.', ',')} m ü. M.';
+    }
+    final cm = (valueMasl - reference) * 100;
     final digits = cm == cm.roundToDouble() ? 0 : 1;
     return '${cm.toStringAsFixed(digits).replaceAll('.', ',')} cm';
   }
@@ -6457,7 +6582,7 @@ class _ForecastDetailChartPainter extends CustomPainter {
   );
 
   final List<BafuForecastPoint> points;
-  final double referenceMasl;
+  final double? referenceMasl;
   final BafuForecastPoint? selected;
 
   @override
@@ -6474,12 +6599,14 @@ class _ForecastDetailChartPainter extends CustomPainter {
       size.height - top - bottom,
     );
     final sourceValues = <double>[
-      ...points.map((point) => (point.minimumMasl - referenceMasl) * 100),
-      ...points.map((point) => (point.maximumMasl - referenceMasl) * 100),
+      ...points.map((point) => _value(point.minimumMasl)),
+      ...points.map((point) => _value(point.maximumMasl)),
     ];
     final rawMin = sourceValues.reduce(math.min);
     final rawMax = sourceValues.reduce(math.max);
-    final margin = math.max(1, (rawMax - rawMin) * .12).toDouble();
+    final margin = math
+        .max(referenceMasl == null ? .01 : 1, (rawMax - rawMin) * .12)
+        .toDouble();
     final step = _niceStep((rawMax - rawMin + margin * 2) / 5);
     final minY = ((rawMin - margin) / step).floor() * step;
     final maxY = ((rawMax + margin) / step).ceil() * step;
@@ -6519,14 +6646,10 @@ class _ForecastDetailChartPainter extends CustomPainter {
     }
 
     final upper = points
-        .map(
-          (point) => position(point, (point.maximumMasl - referenceMasl) * 100),
-        )
+        .map((point) => position(point, _value(point.maximumMasl)))
         .toList();
     final lower = points
-        .map(
-          (point) => position(point, (point.minimumMasl - referenceMasl) * 100),
-        )
+        .map((point) => position(point, _value(point.minimumMasl)))
         .toList();
     final band = Path()..moveTo(upper.first.dx, upper.first.dy);
     for (final point in upper.skip(1)) {
@@ -6543,10 +6666,7 @@ class _ForecastDetailChartPainter extends CustomPainter {
 
     final median = Path();
     for (var index = 0; index < points.length; index++) {
-      final point = position(
-        points[index],
-        (points[index].medianMasl - referenceMasl) * 100,
-      );
+      final point = position(points[index], _value(points[index].medianMasl));
       if (index == 0) {
         median.moveTo(point.dx, point.dy);
       } else {
@@ -6566,7 +6686,7 @@ class _ForecastDetailChartPainter extends CustomPainter {
     if (selected != null) {
       final selectedPosition = position(
         selected!,
-        (selected!.medianMasl - referenceMasl) * 100,
+        _value(selected!.medianMasl),
       );
       canvas.drawLine(
         Offset(selectedPosition.dx, chart.top),
@@ -6615,6 +6735,8 @@ class _ForecastDetailChartPainter extends CustomPainter {
   String _axis(double value) => value == value.roundToDouble()
       ? value.round().toString()
       : value.toStringAsFixed(1).replaceAll('.', ',');
+  double _value(double valueMasl) =>
+      referenceMasl == null ? valueMasl : (valueMasl - referenceMasl!) * 100;
 
   String _timeLabel(DateTime first, double hour, {required bool isStart}) {
     if (isStart) return 'Jetzt';
@@ -6657,23 +6779,24 @@ class _ForecastChartPainter extends CustomPainter {
   _ForecastChartPainter(this.points, this.referenceMasl);
 
   final List<BafuForecastPoint> points;
-  final double referenceMasl;
+  final double? referenceMasl;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (points.length < 2) return;
     final low = points
-        .map((point) => (point.minimumMasl - referenceMasl) * 100)
+        .map((point) => _value(point.minimumMasl))
         .reduce(math.min)
         .toDouble();
     final high = points
-        .map((point) => (point.maximumMasl - referenceMasl) * 100)
+        .map((point) => _value(point.maximumMasl))
         .reduce(math.max)
         .toDouble();
     // A generous visual margin prevents one-centimetre forecast steps from
     // being exaggerated while leaving every source value untouched.
-    final displayMin = low - 4;
-    final displayMax = high + 4;
+    final visualMargin = referenceMasl == null ? .04 : 4;
+    final displayMin = low - visualMargin;
+    final displayMax = high + visualMargin;
     final range = displayMax - displayMin;
     final horizontalPadding = 2.0;
     final verticalPadding = 5.0;
@@ -6694,19 +6817,13 @@ class _ForecastChartPainter extends CustomPainter {
     }
 
     final upper = points
-        .map(
-          (point) => position(point, (point.maximumMasl - referenceMasl) * 100),
-        )
+        .map((point) => position(point, _value(point.maximumMasl)))
         .toList();
     final lower = points
-        .map(
-          (point) => position(point, (point.minimumMasl - referenceMasl) * 100),
-        )
+        .map((point) => position(point, _value(point.minimumMasl)))
         .toList();
     final median = points
-        .map(
-          (point) => position(point, (point.medianMasl - referenceMasl) * 100),
-        )
+        .map((point) => position(point, _value(point.medianMasl)))
         .toList();
     _drawTimeAxis(
       canvas,
@@ -6828,6 +6945,9 @@ class _ForecastChartPainter extends CustomPainter {
       );
     }
   }
+
+  double _value(double valueMasl) =>
+      referenceMasl == null ? valueMasl : (valueMasl - referenceMasl!) * 100;
 
   @override
   bool shouldRepaint(covariant _ForecastChartPainter oldDelegate) =>

@@ -2,15 +2,12 @@ import http from 'node:http';
 import { inflateRawSync } from 'node:zlib';
 
 const port = Number(process.env.BAFU_PROXY_PORT ?? 8787);
+const bafuStations = {
+  2032: { name: 'Romanshorn' },
+  2043: { name: 'Berlingen' },
+};
 const bafuHistoryRoute = '/api/bafu/stations/2032/water-level-history';
-const bafuSourceUrl =
-  'https://www.hydrodaten.admin.ch/plots/p_q_7days/2032_p_q_7days_de.json';
-const bafuHistory40DaysSourceUrl =
-  'https://www.hydrodaten.admin.ch/plots/p_q_40days/2032_p_q_40days_de.json';
-const bafuAnnualRoute = '/api/bafu/stations/2032/water-level-annual';
 const bafuForecastRoute = '/api/bafu/stations/2032/water-level-forecast';
-const bafuForecastSourceUrl =
-  'https://www.hydrodaten.admin.ch/plots/p_forecast/2032_p_forecast_de.json';
 const vorarlbergLiveRoute = '/api/vorarlberg/stations/200337/water-level';
 const vorarlbergSourceUrl = 'https://vowis.vorarlberg.at/api/see';
 const vorarlbergAnnualRoute =
@@ -20,6 +17,7 @@ const vorarlbergAnnualSourceUrl =
 const konstanzEnvironmentRoute =
   '/api/environment/aa9179c1-17ef-4c61-a48a-74193fa7bfdf';
 const romanshornEnvironmentRoute = '/api/environment/bafu-2032';
+const berlingenEnvironmentRoute = '/api/environment/bafu-2043';
 const bregenzEnvironmentRoute = '/api/environment/vowis-200337';
 const dwdKonstanzTemperatureUrl =
   'https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/now/10minutenwerte_TU_02712_now.zip';
@@ -34,6 +32,7 @@ const dwdWarningsKonstanzSourceUrl =
 const meteoSwissGuettingenUrl =
   'https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/gut/ogd-smn_gut_t_now.csv';
 const meteoSwissRomanshornRoute = '/api/meteoswiss/forecast/romanshorn';
+const meteoSwissBerlingenRoute = '/api/meteoswiss/forecast/berlingen';
 const meteoSwissStacItemsUrl =
   'https://data.geo.admin.ch/api/stac/v1/collections/ch.meteoschweiz.ogd-local-forecasting/items?limit=10';
 const meteoSwissRomanshornPoint = {
@@ -45,6 +44,15 @@ const meteoSwissRomanshornPoint = {
   longitude: 9.370531,
   elevationMeters: 412,
 };
+const meteoSwissBerlingenPoint = {
+  pointId: '826700',
+  pointTypeId: '2',
+  postalCode: '8267',
+  name: 'Berlingen',
+  latitude: 47.673547,
+  longitude: 9.023,
+  elevationMeters: 397,
+};
 const meteoSwissParameters = [
   'tre200h0',
   'rre150h0',
@@ -53,9 +61,6 @@ const meteoSwissParameters = [
   'dkl010h0',
   'jww003i0',
 ];
-let meteoSwissForecastCache;
-let meteoSwissForecastCacheAt;
-let meteoSwissForecastInFlight;
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -159,7 +164,7 @@ function meteoswissTimestampUtc(raw) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
-async function loadMeteoSwissRomanshornParameter(sourceUrl, parameter) {
+async function loadMeteoSwissParameter(sourceUrl, parameter, point) {
   const sourceResponse = await fetch(sourceUrl, {
     headers: { Accept: 'text/csv; charset=ISO-8859-1, text/csv, */*' },
     signal: AbortSignal.timeout(120000),
@@ -168,22 +173,22 @@ async function loadMeteoSwissRomanshornParameter(sourceUrl, parameter) {
     throw new Error(`MeteoSwiss ${parameter} responded with HTTP ${sourceResponse.status}.`);
   }
   // The official point files contain all Swiss forecast points. Filter only
-  // Romanshorn while the data is server-side, so Flutter receives no bulky
+  // the requested local point while the data is server-side, so Flutter receives no bulky
   // nationwide dataset and never has to access the cross-origin CSV directly.
   const text = await sourceResponse.text();
   const values = new Map();
-  const expression = /^859000;2;(\d{12});([^\r\n]*)$/gm;
+  const expression = new RegExp(`^${point.pointId};${point.pointTypeId};(\\d{12});([^\\r\\n]*)$`, 'gm');
   for (const match of text.matchAll(expression)) {
     const timestampUtc = meteoswissTimestampUtc(match[1]);
     if (timestampUtc) values.set(timestampUtc, numberOrNull(match[2]?.trim()));
   }
   if (values.size === 0) {
-    throw new Error(`MeteoSwiss ${parameter} has no Romanshorn point rows.`);
+    throw new Error(`MeteoSwiss ${parameter} has no ${point.name} point rows.`);
   }
   return values;
 }
 
-async function fetchMeteoSwissRomanshornForecast() {
+async function fetchMeteoSwissForecast(point) {
   const catalogResponse = await fetch(meteoSwissStacItemsUrl, {
     headers: { Accept: 'application/geo+json, application/json' },
     signal: AbortSignal.timeout(20000),
@@ -212,7 +217,7 @@ async function fetchMeteoSwissRomanshornForecast() {
     }
   }
   if (newestByParameter.size !== meteoSwissParameters.length) {
-    throw new Error('MeteoSwiss STAC is missing a required Romanshorn forecast parameter.');
+    throw new Error(`MeteoSwiss STAC is missing a required ${point.name} forecast parameter.`);
   }
 
   const rawParameters = new Map();
@@ -222,7 +227,7 @@ async function fetchMeteoSwissRomanshornForecast() {
     const asset = newestByParameter.get(parameter);
     rawParameters.set(
       parameter,
-      await loadMeteoSwissRomanshornParameter(asset.href, parameter),
+      await loadMeteoSwissParameter(asset.href, parameter, point),
     );
   }
   const timestamps = new Set();
@@ -240,13 +245,13 @@ async function fetchMeteoSwissRomanshornForecast() {
       windDirectionDegrees: rawParameters.get('dkl010h0').get(timestampUtc) ?? null,
       weatherCode: rawParameters.get('jww003i0').get(timestampUtc) ?? null,
     }));
-  if (points.length === 0) throw new Error('MeteoSwiss has no Romanshorn forecast points.');
+  if (points.length === 0) throw new Error(`MeteoSwiss has no ${point.name} forecast points.`);
   const runAtUtc = new Date(
     Math.max(...[...newestByParameter.values()].map((asset) => asset.timestamp)),
   ).toISOString();
   return {
     source: 'MeteoSwiss Open Data · Localised forecasting data – Point data',
-    station: meteoSwissRomanshornPoint,
+    station: point,
     updatedAtUtc,
     runAtUtc,
     sourceUrls: Object.fromEntries(
@@ -256,22 +261,27 @@ async function fetchMeteoSwissRomanshornForecast() {
   };
 }
 
-async function loadMeteoSwissRomanshornForecast() {
+const meteoSwissCaches = new Map();
+async function loadMeteoSwissForecast(point) {
+  const cacheKey = point.pointId;
+  const cached = meteoSwissCaches.get(cacheKey);
   const cacheStillValid =
-    meteoSwissForecastCache &&
-    meteoSwissForecastCacheAt &&
-    Date.now() - meteoSwissForecastCacheAt < 30 * 60 * 1000;
-  if (cacheStillValid) return meteoSwissForecastCache;
-  meteoSwissForecastInFlight ??= fetchMeteoSwissRomanshornForecast()
+    cached?.forecast &&
+    cached?.cachedAt &&
+    Date.now() - cached.cachedAt < 30 * 60 * 1000;
+  if (cacheStillValid) return cached.forecast;
+  if (cached?.inFlight) return cached.inFlight;
+  const inFlight = fetchMeteoSwissForecast(point)
     .then((forecast) => {
-      meteoSwissForecastCache = forecast;
-      meteoSwissForecastCacheAt = Date.now();
+      meteoSwissCaches.set(cacheKey, { forecast, cachedAt: Date.now() });
       return forecast;
     })
     .finally(() => {
-      meteoSwissForecastInFlight = undefined;
+      const current = meteoSwissCaches.get(cacheKey);
+      if (current?.inFlight) delete current.inFlight;
     });
-  return meteoSwissForecastInFlight;
+  meteoSwissCaches.set(cacheKey, { ...cached, inFlight });
+  return inFlight;
 }
 
 async function fetchDwdRecord(sourceUrl) {
@@ -367,7 +377,12 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === meteoSwissRomanshornRoute) {
-      sendJson(response, 200, await loadMeteoSwissRomanshornForecast());
+      sendJson(response, 200, await loadMeteoSwissForecast(meteoSwissRomanshornPoint));
+      return;
+    }
+
+    if (requestUrl.pathname === meteoSwissBerlingenRoute) {
+      sendJson(response, 200, await loadMeteoSwissForecast(meteoSwissBerlingenPoint));
       return;
     }
 
@@ -415,6 +430,22 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    // Berlingen has no used local environmental sensor in V1. Returning an
+    // explicit official-source-neutral empty data set prevents placeholder
+    // values from being mistaken for a local water-temperature measurement.
+    if (request.url === berlingenEnvironmentRoute) {
+      sendJson(response, 200, {
+        source: 'MeteoSwiss',
+        station: 'Berlingen',
+        waterTemperatureC: null,
+        waterTemperatureTimestamp: null,
+        airTemperatureC: null,
+        windSpeedMetersPerSecond: null,
+        windDirectionDegrees: null,
+      });
+      return;
+    }
+
     if (request.url === bregenzEnvironmentRoute) {
       const stationData = await fetchVorarlbergStationData();
       sendJson(response, 200, {
@@ -429,8 +460,46 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    const bafuMatch = /^\/api\/bafu\/stations\/(2032|2043)\/water-level-(history|forecast|annual)$/.exec(requestUrl.pathname);
+    if (bafuMatch) {
+      const [, stationId, resource] = bafuMatch;
+      if (!bafuStations[stationId]) throw new Error('Unknown BAFU station.');
+      if (resource === 'forecast') {
+        const sourceResponse = await fetch(
+          `https://www.hydrodaten.admin.ch/plots/p_forecast/${stationId}_p_forecast_de.json`,
+          { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000) },
+        );
+        if (!sourceResponse.ok) throw new Error(`BAFU forecast responded with HTTP ${sourceResponse.status}.`);
+        const sourcePayload = await sourceResponse.json();
+        if (!Array.isArray(sourcePayload?.plot?.data)) throw new Error('BAFU forecast response has no plot data.');
+        sendJson(response, 200, sourcePayload);
+        return;
+      }
+      if (resource === 'annual') {
+        const year = requestUrl.searchParams.get('year');
+        if (!/^\d{4}$/.test(year ?? '')) throw new Error('Invalid BAFU comparison year.');
+        const sourceResponse = await fetch(
+          `https://www.hydrodaten.admin.ch/web/hydro/de/p_annual/${stationId}/${year}/plot`,
+          { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000) },
+        );
+        if (!sourceResponse.ok) throw new Error(`BAFU annual history responded with HTTP ${sourceResponse.status}.`);
+        sendJson(response, 200, await sourceResponse.json());
+        return;
+      }
+      const range = requestUrl.searchParams.get('range') === '40d' ? '40days' : '7days';
+      const sourceUrl = `https://www.hydrodaten.admin.ch/plots/p_q_${range}/${stationId}_p_q_${range}_de.json`;
+      const sourceResponse = await fetch(sourceUrl, {
+        headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000),
+      });
+      if (!sourceResponse.ok) throw new Error(`BAFU responded with HTTP ${sourceResponse.status}.`);
+      const sourcePayload = await sourceResponse.json();
+      sendJson(response, 200, { source: sourceUrl, stationId: Number(stationId), unit: 'm ü. M.', points: normalizedPoints(sourcePayload) });
+      return;
+    }
+
+    /* Legacy explicit route retained for running development clients. */
     if (requestUrl.pathname === bafuForecastRoute) {
-      const sourceResponse = await fetch(bafuForecastSourceUrl, {
+      const sourceResponse = await fetch('https://www.hydrodaten.admin.ch/plots/p_forecast/2032_p_forecast_de.json', {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(12000),
       });
@@ -445,7 +514,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (requestUrl.pathname === bafuAnnualRoute) {
+    if (requestUrl.pathname === '/api/bafu/stations/2032/water-level-annual') {
       const year = requestUrl.searchParams.get('year');
       if (!/^\d{4}$/.test(year ?? '')) throw new Error('Invalid BAFU comparison year.');
       const sourceResponse = await fetch(
@@ -463,8 +532,8 @@ const server = http.createServer(async (request, response) => {
     }
 
     const historySourceUrl = requestUrl.searchParams.get('range') === '40d'
-      ? bafuHistory40DaysSourceUrl
-      : bafuSourceUrl;
+      ? 'https://www.hydrodaten.admin.ch/plots/p_q_40days/2032_p_q_40days_de.json'
+      : 'https://www.hydrodaten.admin.ch/plots/p_q_7days/2032_p_q_7days_de.json';
     const sourceResponse = await fetch(historySourceUrl, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(12000),
@@ -491,6 +560,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`DWD MOSMIX proxy listening on http://127.0.0.1:${port}${dwdMosmixKonstanzRoute}`);
   console.log(`DWD CAP warning proxy listening on http://127.0.0.1:${port}${dwdWarningsKonstanzRoute}`);
   console.log(`MeteoSwiss Romanshorn proxy listening on http://127.0.0.1:${port}${meteoSwissRomanshornRoute}`);
+  console.log(`MeteoSwiss Berlingen proxy listening on http://127.0.0.1:${port}${meteoSwissBerlingenRoute}`);
   console.log(`Vorarlberg live proxy listening on http://127.0.0.1:${port}${vorarlbergLiveRoute}`);
   console.log(`Environment proxy listening on http://127.0.0.1:${port}/api/environment/{stationUuid}`);
 });

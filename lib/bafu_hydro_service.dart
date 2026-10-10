@@ -139,26 +139,51 @@ class BafuHydroService {
     waterLevelReferenceMasl: romanshornReferenceMasl,
   );
 
+  /// Official BAFU station 2043. BAFU publishes this water level directly in
+  /// metres above sea level. There is deliberately no cm reference here:
+  /// the station height published in BAFU metadata is not a Pegelnullpunkt.
+  static const berlingen = PegelStation(
+    uuid: 'bafu-2043',
+    name: 'BERLINGEN',
+    waterName: 'BODENSEE (UNTERSEE)',
+    source: StationSource.bafu,
+    unit: 'm ü. M.',
+  );
+
+  static const _stationIds = <String, String>{
+    'bafu-2032': '2032',
+    'bafu-2043': '2043',
+  };
+
   static const _lindasEndpoint = 'https://politics.ld.admin.ch/query/';
-  static final _historyProxyEndpoint = Uri.parse(
-    'http://127.0.0.1:8787/api/bafu/stations/2032/water-level-history',
-  );
-  static final _forecastProxyEndpoint = Uri.parse(
-    'http://127.0.0.1:8787/api/bafu/stations/2032/water-level-forecast',
-  );
-  static const _currentQuery = '''
+  static String _currentQuery(String stationId) =>
+      '''
 SELECT ?value ?time
 FROM <https://lindas.admin.ch/foen/hydro>
 WHERE {
-  <https://environment.ld.admin.ch/foen/hydro/lake/observation/2032>
+  <https://environment.ld.admin.ch/foen/hydro/lake/observation/$stationId>
     <https://environment.ld.admin.ch/foen/hydro/dimension/waterLevel> ?value ;
     <https://environment.ld.admin.ch/foen/hydro/dimension/measurementTime> ?time .
 }''';
 
-  Future<BafuLiveData> fetchRomanshornLiveData() async {
-    final current = await _fetchCurrentFromLindas();
+  String _stationId(PegelStation station) {
+    final stationId = _stationIds[station.uuid];
+    if (stationId == null) throw const BafuHydroException();
+    return stationId;
+  }
+
+  Uri _historyEndpoint(PegelStation station) => Uri.parse(
+    'http://127.0.0.1:8787/api/bafu/stations/${_stationId(station)}/water-level-history',
+  );
+
+  Uri _forecastEndpoint(PegelStation station) => Uri.parse(
+    'http://127.0.0.1:8787/api/bafu/stations/${_stationId(station)}/water-level-forecast',
+  );
+
+  Future<BafuLiveData> fetchLiveData(PegelStation station) async {
+    final current = await _fetchCurrentFromLindas(station);
     try {
-      final availableHistory = await _fetchHistoryFromProxy();
+      final availableHistory = await _fetchHistoryFromProxy(station);
       final target = current.timestamp.subtract(const Duration(hours: 24));
       final history = availableHistory
           .where(
@@ -180,32 +205,51 @@ WHERE {
     }
   }
 
+  Future<BafuLiveData> fetchRomanshornLiveData() => fetchLiveData(romanshorn);
+
   /// Aktuelle Originalmessung aus dem offiziellen LINDAS-Dienst.
   /// Diese separate Abfrage wird auch für tagesgenaue saisonale Vergleiche
   /// verwendet; eine Jahresreferenz ersetzt niemals eine Live-Messung.
   Future<BafuReading> fetchRomanshornCurrentReading() =>
-      _fetchCurrentFromLindas();
+      _fetchCurrentFromLindas(romanshorn);
 
-  Future<BafuReading> _fetchCurrentFromLindas() async {
+  Future<BafuReading> fetchCurrentReading(PegelStation station) =>
+      _fetchCurrentFromLindas(station);
+
+  Future<BafuReading> _fetchCurrentFromLindas(PegelStation station) async {
     final endpoint = Uri.parse(_lindasEndpoint).replace(
-      queryParameters: const {'query': _currentQuery, 'format': 'json'},
+      queryParameters: {
+        'query': _currentQuery(_stationId(station)),
+        'format': 'json',
+      },
     );
     try {
       final response = await http
-          .get(endpoint, headers: const {'Accept': 'application/sparql-results+json'})
+          .get(
+            endpoint,
+            headers: const {'Accept': 'application/sparql-results+json'},
+          )
           .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) throw const BafuHydroException();
       final body = jsonDecode(response.body);
       final results = body is Map<String, dynamic> ? body['results'] : null;
-      final bindings = results is Map<String, dynamic> ? results['bindings'] : null;
-      if (bindings is! List || bindings.isEmpty || bindings.first is! Map<String, dynamic>) {
+      final bindings = results is Map<String, dynamic>
+          ? results['bindings']
+          : null;
+      if (bindings is! List ||
+          bindings.isEmpty ||
+          bindings.first is! Map<String, dynamic>) {
         throw const BafuHydroException();
       }
       final binding = bindings.first as Map<String, dynamic>;
       final rawValue = binding['value'];
       final rawTime = binding['time'];
-      final value = rawValue is Map<String, dynamic> ? double.tryParse('${rawValue['value']}') : null;
-      final timestamp = rawTime is Map<String, dynamic> ? DateTime.tryParse('${rawTime['value']}') : null;
+      final value = rawValue is Map<String, dynamic>
+          ? double.tryParse('${rawValue['value']}')
+          : null;
+      final timestamp = rawTime is Map<String, dynamic>
+          ? DateTime.tryParse('${rawTime['value']}')
+          : null;
       if (value == null || timestamp == null) throw const BafuHydroException();
       return BafuReading(waterLevelMasl: value, timestamp: timestamp);
     } on BafuHydroException {
@@ -215,9 +259,11 @@ WHERE {
     }
   }
 
-  Future<BafuForecastData> fetchRomanshornForecast() async {
+  Future<BafuForecastData> fetchForecast(PegelStation station) async {
     try {
-      final response = await http.get(_forecastProxyEndpoint).timeout(const Duration(seconds: 12));
+      final response = await http
+          .get(_forecastEndpoint(station))
+          .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) throw const BafuHydroException();
       final body = jsonDecode(response.body);
       final plot = body is Map<String, dynamic> ? body['plot'] : null;
@@ -229,25 +275,35 @@ WHERE {
           .whereType<Map<String, dynamic>>()
           .where((trace) => trace['name'] == 'Min. / Max.')
           .toList();
-      if (median.isEmpty || minMaxTraces.length < 2) throw const BafuHydroException();
+      if (median.isEmpty || minMaxTraces.length < 2) {
+        throw const BafuHydroException();
+      }
       final boundA = _valuesByTimestamp(minMaxTraces[0]);
       final boundB = _valuesByTimestamp(minMaxTraces[1]);
-      final points = median.entries
-          .where((entry) => boundA.containsKey(entry.key) && boundB.containsKey(entry.key))
-          .map(
-            (entry) => BafuForecastPoint(
-              timestamp: entry.key,
-              medianMasl: entry.value,
-              minimumMasl: _min(boundA[entry.key]!, boundB[entry.key]!),
-              maximumMasl: _max(boundA[entry.key]!, boundB[entry.key]!),
-            ),
-          )
-          .toList()
-        ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      final points =
+          median.entries
+              .where(
+                (entry) =>
+                    boundA.containsKey(entry.key) &&
+                    boundB.containsKey(entry.key),
+              )
+              .map(
+                (entry) => BafuForecastPoint(
+                  timestamp: entry.key,
+                  medianMasl: entry.value,
+                  minimumMasl: _min(boundA[entry.key]!, boundB[entry.key]!),
+                  maximumMasl: _max(boundA[entry.key]!, boundB[entry.key]!),
+                ),
+              )
+              .toList()
+            ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
       if (points.length < 2) throw const BafuHydroException();
       final layout = plot['layout'];
       final title = layout is Map<String, dynamic> ? layout['title'] : null;
-      return BafuForecastData(points: points, issuedLabel: title is String ? title : null);
+      return BafuForecastData(
+        points: points,
+        issuedLabel: title is String ? title : null,
+      );
     } on BafuHydroException {
       rethrow;
     } catch (_) {
@@ -255,11 +311,16 @@ WHERE {
     }
   }
 
+  Future<BafuForecastData> fetchRomanshornForecast() =>
+      fetchForecast(romanshorn);
+
   Map<DateTime, double> _valuesByTimestamp(Map<String, dynamic>? trace) {
     if (trace == null) throw const BafuHydroException();
     final rawTimes = trace['x'];
     final rawValues = trace['y'];
-    if (rawTimes is! List || rawValues is! List || rawTimes.length != rawValues.length) {
+    if (rawTimes is! List ||
+        rawValues is! List ||
+        rawTimes.length != rawValues.length) {
       throw const BafuHydroException();
     }
     final values = <DateTime, double>{};
@@ -267,7 +328,9 @@ WHERE {
       final rawTime = rawTimes[index];
       final rawValue = rawValues[index];
       final timestamp = rawTime is String ? DateTime.tryParse(rawTime) : null;
-      final value = rawValue is num ? rawValue.toDouble() : double.tryParse('$rawValue');
+      final value = rawValue is num
+          ? rawValue.toDouble()
+          : double.tryParse('$rawValue');
       if (timestamp == null || value == null) throw const BafuHydroException();
       values[timestamp] = value;
     }
@@ -285,9 +348,11 @@ WHERE {
 
   double _max(double a, double b) => a > b ? a : b;
 
-  Future<List<BafuReading>> _fetchHistoryFromProxy() async {
+  Future<List<BafuReading>> _fetchHistoryFromProxy(PegelStation station) async {
     try {
-      final response = await http.get(_historyProxyEndpoint).timeout(const Duration(seconds: 12));
+      final response = await http
+          .get(_historyEndpoint(station))
+          .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) throw const BafuHydroException();
       final body = jsonDecode(response.body);
       final rawPoints = body is Map<String, dynamic> ? body['points'] : null;
@@ -295,12 +360,17 @@ WHERE {
       final readings = rawPoints.whereType<Map<String, dynamic>>().map((point) {
         final rawValue = point['value'];
         final rawTimestamp = point['timestamp'];
-        final value = rawValue is num ? rawValue.toDouble() : double.tryParse('$rawValue');
-        final timestamp = rawTimestamp is String ? DateTime.tryParse(rawTimestamp) : null;
-        if (value == null || timestamp == null) throw const BafuHydroException();
+        final value = rawValue is num
+            ? rawValue.toDouble()
+            : double.tryParse('$rawValue');
+        final timestamp = rawTimestamp is String
+            ? DateTime.tryParse(rawTimestamp)
+            : null;
+        if (value == null || timestamp == null) {
+          throw const BafuHydroException();
+        }
         return BafuReading(waterLevelMasl: value, timestamp: timestamp);
-      }).toList()
-        ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      }).toList()..sort((a, b) => a.timestamp.compareTo(b.timestamp));
       if (readings.length < 2) throw const BafuHydroException();
       return readings;
     } on BafuHydroException {
@@ -312,7 +382,8 @@ WHERE {
 
   BafuReading _closestReading(List<BafuReading> readings, DateTime target) {
     return readings.reduce(
-      (closest, candidate) => candidate.timestamp.difference(target).inMilliseconds.abs() <
+      (closest, candidate) =>
+          candidate.timestamp.difference(target).inMilliseconds.abs() <
               closest.timestamp.difference(target).inMilliseconds.abs()
           ? candidate
           : closest,

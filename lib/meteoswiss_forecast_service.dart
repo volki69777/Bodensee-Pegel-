@@ -36,6 +36,16 @@ class MeteoSwissForecastStation {
     longitude: 9.370531,
     elevationMeters: 412,
   );
+
+  static const berlingen = MeteoSwissForecastStation(
+    pointId: '826700',
+    pointTypeId: '2',
+    postalCode: '8267',
+    name: 'Berlingen',
+    latitude: 47.673547,
+    longitude: 9.023,
+    elevationMeters: 397,
+  );
 }
 
 /// One hourly MeteoSwiss local forecast point. The documented source units are
@@ -208,21 +218,27 @@ abstract final class MeteoSwissWeatherSymbols {
 }
 
 class MeteoSwissForecastParser {
-  static MeteoSwissForecast parseJson(String source) {
+  static MeteoSwissForecast parseJson(
+    String source, {
+    MeteoSwissForecastStation expectedStation =
+        MeteoSwissForecastStation.romanshorn,
+  }) {
     final decoded = jsonDecode(source);
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('MeteoSwiss-Antwort ist kein Objekt.');
     }
-    return parsePayload(decoded);
+    return parsePayload(decoded, expectedStation: expectedStation);
   }
 
-  static MeteoSwissForecast parsePayload(Map<String, dynamic> payload) {
+  static MeteoSwissForecast parsePayload(
+    Map<String, dynamic> payload, {
+    MeteoSwissForecastStation expectedStation =
+        MeteoSwissForecastStation.romanshorn,
+  }) {
     final stationPayload = payload['station'];
     final pointPayload = payload['points'];
     if (stationPayload is! Map || pointPayload is! List) {
-      throw const FormatException(
-        'MeteoSwiss-Antwort enthält keine Punktdaten.',
-      );
+      throw FormatException('MeteoSwiss-Antwort enthält keine Punktdaten.');
     }
     final station = MeteoSwissForecastStation(
       pointId: _string(stationPayload['pointId']) ?? '',
@@ -233,15 +249,14 @@ class MeteoSwissForecastParser {
       longitude: _number(stationPayload['longitude']) ?? double.nan,
       elevationMeters: _number(stationPayload['elevationMeters']) ?? double.nan,
     );
-    if (station.pointId != MeteoSwissForecastStation.romanshorn.pointId ||
-        station.pointTypeId !=
-            MeteoSwissForecastStation.romanshorn.pointTypeId ||
-        station.name.toLowerCase() != 'romanshorn' ||
+    if (station.pointId != expectedStation.pointId ||
+        station.pointTypeId != expectedStation.pointTypeId ||
+        station.name.toLowerCase() != expectedStation.name.toLowerCase() ||
         !station.latitude.isFinite ||
         !station.longitude.isFinite ||
         !station.elevationMeters.isFinite) {
-      throw const FormatException(
-        'MeteoSwiss-Antwort gehört nicht zu Romanshorn.',
+      throw FormatException(
+        'MeteoSwiss-Antwort gehört nicht zu ${expectedStation.name}.',
       );
     }
 
@@ -400,14 +415,22 @@ class MeteoSwissForecastAggregation {
 }
 
 class MeteoSwissForecastService {
-  MeteoSwissForecastService({http.Client? client})
-    : _client = client ?? http.Client();
+  MeteoSwissForecastService({
+    http.Client? client,
+    this.station = MeteoSwissForecastStation.romanshorn,
+    String? proxyUrl,
+  }) : _client = client ?? http.Client(),
+       _proxyUrl = proxyUrl ?? _proxyUrlFor(station);
 
   static const proxyUrl =
       'http://127.0.0.1:8787/api/meteoswiss/forecast/romanshorn';
+  static const berlingenProxyUrl =
+      'http://127.0.0.1:8787/api/meteoswiss/forecast/berlingen';
   static const _cacheDuration = Duration(minutes: 30);
 
   final http.Client _client;
+  final MeteoSwissForecastStation station;
+  final String _proxyUrl;
   MeteoSwissForecast? _cached;
   DateTime? _cachedAt;
   Future<MeteoSwissForecast>? _inFlight;
@@ -424,17 +447,27 @@ class MeteoSwissForecastService {
 
   Future<MeteoSwissForecast> _load() async {
     final response = await _client
-        .get(Uri.parse(proxyUrl))
+        .get(Uri.parse(_proxyUrl))
         .timeout(const Duration(seconds: 90));
     if (response.statusCode != 200) {
       throw MeteoSwissForecastException(
         'MeteoSwiss-Prognose ist derzeit nicht verfügbar.',
       );
     }
-    final forecast = MeteoSwissForecastParser.parseJson(response.body);
+    final forecast = MeteoSwissForecastParser.parseJson(
+      response.body,
+      expectedStation: station,
+    );
     _cached = forecast;
     _cachedAt = DateTime.now();
     return forecast;
+  }
+
+  static String _proxyUrlFor(MeteoSwissForecastStation station) {
+    if (station.pointId == MeteoSwissForecastStation.berlingen.pointId) {
+      return berlingenProxyUrl;
+    }
+    return proxyUrl;
   }
 }
 

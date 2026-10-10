@@ -22,6 +22,7 @@ class StationSelectionService extends ChangeNotifier {
     PegelOnlineService.konstanz,
     BafuHydroService.romanshorn,
     VorarlbergHydroService.bregenz,
+    BafuHydroService.berlingen,
   ];
 
   final SharedPreferencesAsync _preferences;

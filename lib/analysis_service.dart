@@ -228,6 +228,12 @@ class AnalysisService {
   );
   final BafuHydroService _bafuService = BafuHydroService();
 
+  String _bafuStationId(PegelStation station) => switch (station.uuid) {
+    'bafu-2032' => '2032',
+    'bafu-2043' => '2043',
+    _ => throw const AnalysisException(),
+  };
+
   List<AnalysisPeriod> periodsFor(PegelStation station) =>
       switch (station.source) {
         StationSource.pegelOnline => const [
@@ -270,8 +276,8 @@ class AnalysisService {
     if (period == AnalysisPeriod.year1) {
       final annualComparison = switch (station.source) {
         StationSource.bafu => _annualCache.get(
-          'bafu-2032-${DateTime.now().year}',
-          _fetchRomanshornAnnual,
+          '${station.uuid}-${DateTime.now().year}',
+          () => _fetchBafuAnnual(station),
         ),
         StationSource.vorarlberg => _annualCache.get(
           'vowis-200337-${DateTime.now().year}',
@@ -290,12 +296,12 @@ class AnalysisService {
 
     final readings = switch (station.source) {
       StationSource.pegelOnline => await _fetchKonstanz(station, period),
-      StationSource.bafu => await _fetchRomanshorn(period),
+      StationSource.bafu => await _fetchBafu(station, period),
       StationSource.vorarlberg => await _fetchBregenz(period),
     };
     if (readings.length < 2) throw const AnalysisException();
     SeasonalReference? seasonalReference;
-    if (station.source == StationSource.bafu) {
+    if (station.uuid == BafuHydroService.romanshorn.uuid) {
       try {
         seasonalReference = await _fetchRomanshornSeasonalReference();
       } on AnalysisException {
@@ -423,11 +429,14 @@ class AnalysisService {
     );
   }
 
-  Future<List<AnalysisReading>> _fetchRomanshorn(AnalysisPeriod period) async {
+  Future<List<AnalysisReading>> _fetchBafu(
+    PegelStation station,
+    AnalysisPeriod period,
+  ) async {
     final range = period == AnalysisPeriod.days30 ? '40d' : '7d';
     final body = await _getJson(
       Uri.parse(
-        '$_proxyBase/api/bafu/stations/2032/water-level-history?range=$range',
+        '$_proxyBase/api/bafu/stations/${_bafuStationId(station)}/water-level-history?range=$range',
       ),
     );
     final points = body is Map<String, dynamic> ? body['points'] : null;
@@ -439,20 +448,23 @@ class AnalysisService {
         if (valueMasl == null || timestamp == null) {
           throw const AnalysisException();
         }
+        final reference = station.waterLevelReferenceMasl;
         return AnalysisReading(
           timestamp: timestamp,
-          valueCm: (valueMasl - BafuHydroService.romanshornReferenceMasl) * 100,
+          valueCm: reference == null
+              ? valueMasl
+              : (valueMasl - reference) * 100,
         );
       }),
       period,
     );
   }
 
-  Future<AnnualComparison> _fetchRomanshornAnnual() async {
+  Future<AnnualComparison> _fetchBafuAnnual(PegelStation station) async {
     final currentYear = DateTime.now().year;
     final body = await _getJson(
       Uri.parse(
-        '$_proxyBase/api/bafu/stations/2032/water-level-annual?year=${currentYear - 1}',
+        '$_proxyBase/api/bafu/stations/${_bafuStationId(station)}/water-level-annual?year=${currentYear - 1}',
       ),
     );
     final plot = body is Map<String, dynamic> ? body['plot'] : null;
@@ -462,25 +474,25 @@ class AnalysisService {
       traces,
       '$currentYear',
       displayYear: currentYear,
-      referenceMasl: BafuHydroService.romanshornReferenceMasl,
+      referenceMasl: station.waterLevelReferenceMasl,
     );
     final previous = _annualTrace(
       traces,
       '${currentYear - 1}',
       displayYear: currentYear,
-      referenceMasl: BafuHydroService.romanshornReferenceMasl,
+      referenceMasl: station.waterLevelReferenceMasl,
     );
     final median = _annualTrace(
       traces,
       'Median',
       displayYear: currentYear,
-      referenceMasl: BafuHydroService.romanshornReferenceMasl,
+      referenceMasl: station.waterLevelReferenceMasl,
     );
     final band = _annualBand(
       traces,
       '05.-95. Perzentil',
       displayYear: currentYear,
-      referenceMasl: BafuHydroService.romanshornReferenceMasl,
+      referenceMasl: station.waterLevelReferenceMasl,
     );
     if (current.length < 2 ||
         previous.length < 2 ||
@@ -493,7 +505,9 @@ class AnalysisService {
       previous: previous,
       reference: median,
       band: band,
-      referenceLabel: 'Saisonaler Median',
+      referenceLabel: station.uuid == BafuHydroService.romanshorn.uuid
+          ? 'Saisonaler Median'
+          : 'Historische Referenz',
     );
   }
 
@@ -550,7 +564,7 @@ class AnalysisService {
     List traces,
     String traceName, {
     required int displayYear,
-    required double referenceMasl,
+    required double? referenceMasl,
   }) {
     Map<String, dynamic>? trace;
     for (final candidate in traces.whereType<Map<String, dynamic>>()) {
@@ -572,7 +586,9 @@ class AnalysisService {
       readings.add(
         AnalysisReading(
           timestamp: DateTime(displayYear, sourceTime.month, sourceTime.day),
-          valueCm: (valueMasl - referenceMasl) * 100,
+          valueCm: referenceMasl == null
+              ? valueMasl
+              : (valueMasl - referenceMasl) * 100,
         ),
       );
     }
@@ -583,7 +599,7 @@ class AnalysisService {
     List traces,
     String traceName, {
     required int displayYear,
-    required double referenceMasl,
+    required double? referenceMasl,
   }) {
     final valuesByDay = <String, List<double>>{};
     Map<String, dynamic>? trace;
@@ -613,8 +629,12 @@ class AnalysisService {
       band.add(
         AnalysisBandPoint(
           timestamp: DateTime(displayYear, month, day),
-          lowerCm: (values.reduce(math.min) - referenceMasl) * 100,
-          upperCm: (values.reduce(math.max) - referenceMasl) * 100,
+          lowerCm: referenceMasl == null
+              ? values.reduce(math.min)
+              : (values.reduce(math.min) - referenceMasl) * 100,
+          upperCm: referenceMasl == null
+              ? values.reduce(math.max)
+              : (values.reduce(math.max) - referenceMasl) * 100,
         ),
       );
     });

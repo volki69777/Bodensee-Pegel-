@@ -39,6 +39,13 @@ void main() {
     );
     expect(
       service.resolvePeriodForStation(
+        BafuHydroService.berlingen,
+        AnalysisPeriod.year1,
+      ),
+      AnalysisPeriod.year1,
+    );
+    expect(
+      service.resolvePeriodForStation(
         VorarlbergHydroService.bregenz,
         AnalysisPeriod.year1,
       ),

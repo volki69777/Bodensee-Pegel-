@@ -16,6 +16,8 @@ abstract final class MapConfiguration {
     'bafu-2032': StationMapLocation(latitude: 47.5650, longitude: 9.3810),
     // Wasserwirtschaft Vorarlberg: Bregenz (Seepegel), station 200337.
     'vowis-200337': StationMapLocation(latitude: 47.5037, longitude: 9.7432),
+    // BAFU station 2043: LV95 2718577 / 1281728, transformed to WGS84.
+    'bafu-2043': StationMapLocation(latitude: 47.6735, longitude: 9.0230),
   };
 
   static StationMapLocation locationFor(PegelStation station) => stations[station.uuid]!;

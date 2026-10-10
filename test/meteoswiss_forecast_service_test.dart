@@ -27,6 +27,25 @@ void main() {
     expect(forecast.points[0].windKilometersPerHour, 11.2);
   });
 
+  test('accepts the verified Berlingen point when explicitly selected', () {
+    final payload = _payload(points: [_point('2026-09-12T10:00:00Z')])
+      ..['station'] = {
+        'pointId': '826700',
+        'pointTypeId': '2',
+        'postalCode': '8267',
+        'name': 'Berlingen',
+        'latitude': 47.673547,
+        'longitude': 9.023,
+        'elevationMeters': 397,
+      };
+    final forecast = MeteoSwissForecastParser.parsePayload(
+      payload,
+      expectedStation: MeteoSwissForecastStation.berlingen,
+    );
+    expect(forecast.station.name, 'Berlingen');
+    expect(forecast.station.pointId, '826700');
+  });
+
   test('aggregates original Celsius, mm and km/h by Europe/Zurich day', () {
     final forecast = MeteoSwissForecastParser.parsePayload(
       _payload(

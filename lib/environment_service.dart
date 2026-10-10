@@ -65,11 +65,18 @@ class EnvironmentService {
     airSourceLabel: 'See-Messstation',
     waterTemperatureLabel: 'Bregenz · 0,5 m',
   );
+  static const berlingen = EnvironmentStationConfig(
+    stationUuid: 'bafu-2043',
+    windSourceLabel: 'MeteoSwiss',
+    airSourceLabel: 'MeteoSwiss',
+    waterTemperatureUnavailableLabel: 'Keine lokale Messung verfügbar',
+  );
 
   static const stationConfigs = <EnvironmentStationConfig>[
     konstanz,
     romanshorn,
     bregenz,
+    berlingen,
   ];
 
   EnvironmentStationConfig configFor(PegelStation station) =>
