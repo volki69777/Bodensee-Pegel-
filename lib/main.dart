@@ -227,18 +227,41 @@ Route<void> _appRouteFor(
     ),
     builder: (_) => DashboardPage(
       initialDestination: destination ?? AppDestination.live,
-      initialStation: settings.arguments is PegelStation
+      initialStation: settings.arguments is _LiveWindForecastNavigationRequest
+          ? (settings.arguments! as _LiveWindForecastNavigationRequest).station
+          : settings.arguments is PegelStation
           ? settings.arguments! as PegelStation
+          : null,
+      openWindForecast:
+          settings.arguments is _LiveWindForecastNavigationRequest,
+      activityDate: settings.arguments is _LiveWindForecastNavigationRequest
+          ? (settings.arguments! as _LiveWindForecastNavigationRequest)
+                .activityDate
           : null,
       redirectToLive: redirectToLive || destination == null,
     ),
   );
 }
 
+/// Ephemeral navigation state for opening the existing LIVE wind card.
+/// It intentionally is not encoded into the URL: the card only represents the
+/// next 24/48 hours, not a separate forecast for an arbitrary activity day.
+class _LiveWindForecastNavigationRequest {
+  const _LiveWindForecastNavigationRequest({
+    required this.station,
+    required this.activityDate,
+  });
+
+  final PegelStation station;
+  final DateTime activityDate;
+}
+
 void _navigateTo(
   BuildContext context,
   AppDestination destination, {
   PegelStation? initialStation,
+  bool openWindForecast = false,
+  DateTime? activityDate,
 }) {
   if (initialStation != null) {
     StationSelectionScope.maybeOf(context)?.select(initialStation);
@@ -252,10 +275,21 @@ void _navigateTo(
   }
   Navigator.of(context).pushAndRemoveUntil(
     MaterialPageRoute<void>(
-      settings: RouteSettings(name: path, arguments: initialStation),
+      settings: RouteSettings(
+        name: path,
+        arguments:
+            openWindForecast && initialStation != null && activityDate != null
+            ? _LiveWindForecastNavigationRequest(
+                station: initialStation,
+                activityDate: activityDate,
+              )
+            : initialStation,
+      ),
       builder: (_) => DashboardPage(
         initialDestination: destination,
         initialStation: initialStation,
+        openWindForecast: openWindForecast,
+        activityDate: activityDate,
       ),
     ),
     (_) => false,
@@ -267,11 +301,15 @@ class DashboardPage extends StatefulWidget {
     super.key,
     this.initialDestination = AppDestination.live,
     this.initialStation,
+    this.openWindForecast = false,
+    this.activityDate,
     this.redirectToLive = false,
   });
 
   final AppDestination initialDestination;
   final PegelStation? initialStation;
+  final bool openWindForecast;
+  final DateTime? activityDate;
   final bool redirectToLive;
 
   @override
@@ -539,7 +577,9 @@ class _DashboardPageState extends State<DashboardPage> {
     // The card owns the visible error state. Keep a listener while a page
     // change disposes it so a delayed network failure is still handled.
     unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
-    setState(() => _windForecast = future);
+    setState(() {
+      _windForecast = future;
+    });
   }
 
   Future<StationLiveData> _loadLiveData(PegelStation station) async {
@@ -683,6 +723,8 @@ class _DashboardPageState extends State<DashboardPage> {
                         _windForecast != null &&
                         snapshot.connectionState == ConnectionState.waiting,
                     onLoad: _ensureWindForecast,
+                    initiallyExpanded: widget.openWindForecast,
+                    activityContextNotice: _windActivityContextNotice(),
                   ),
                 ),
                 if (_showHvzForecastGraphic &&
@@ -740,6 +782,19 @@ class _DashboardPageState extends State<DashboardPage> {
       ],
     ),
   );
+
+  String? _windActivityContextNotice() {
+    final activityDate = widget.activityDate;
+    if (!widget.openWindForecast || activityDate == null) return null;
+    final now = DateTime.now();
+    final selectedIsToday =
+        activityDate.year == now.year &&
+        activityDate.month == now.month &&
+        activityDate.day == now.day;
+    return selectedIsToday
+        ? 'Die Windansicht zeigt ab jetzt; vergangene Stunden sind nicht enthalten.'
+        : 'Die Windansicht zeigt die nächsten 24/48 Stunden. Der gewählte Aktivitätstag wird nicht separat dargestellt.';
+  }
 }
 
 class TodayPage extends StatefulWidget {
@@ -1365,6 +1420,13 @@ class _TodayPageState extends State<TodayPage> {
           activities: activities,
           ratings: ratingsByDay[_selectedDate] ?? const {},
           timeWindowRatings: timeWindowRatings,
+          onViewWindTrend: () => _navigateTo(
+            context,
+            AppDestination.live,
+            initialStation: _station,
+            openWindForecast: true,
+            activityDate: _selectedDate,
+          ),
         ),
         const SizedBox(height: 20),
         _WeeklyPlannerSection(
@@ -2250,11 +2312,13 @@ class _TodayActivitiesSection extends StatelessWidget {
     required this.activities,
     required this.ratings,
     required this.timeWindowRatings,
+    required this.onViewWindTrend,
   });
 
   final List<_PlannerActivity> activities;
   final Map<String, ActivityRating> ratings;
   final Map<ActivityTimeWindow, Map<String, ActivityRating>> timeWindowRatings;
+  final VoidCallback onViewWindTrend;
 
   @override
   Widget build(BuildContext context) => _MoreSection(
@@ -2281,6 +2345,7 @@ class _TodayActivitiesSection extends StatelessWidget {
                         'Nicht genügend Wetterdaten verfügbar',
                       ),
               },
+              onViewWindTrend: onViewWindTrend,
             ),
             if (index < activities.length - 1)
               const Divider(height: 1, color: Color(0xFFEAF0F7)),
@@ -2346,18 +2411,29 @@ class _TodayActivityRow extends StatelessWidget {
     required this.activity,
     required this.rating,
     required this.timeWindowRatings,
+    required this.onViewWindTrend,
   });
 
   final _PlannerActivity activity;
   final ActivityRating rating;
   final Map<ActivityTimeWindow, ActivityRating> timeWindowRatings;
+  final VoidCallback onViewWindTrend;
+
+  static const _windDependentActivityIds = <String>{
+    'sup_kajak',
+    'segeln',
+    'motorboot',
+    'kiten',
+  };
 
   @override
   Widget build(BuildContext context) => SizedBox(
     key: ValueKey('today-activity-${activity.id}'),
     // Three upcoming intervals can wrap onto two compact chip rows on narrow
     // phones. Reserve their real height instead of clipping the last row.
-    height: timeWindowRatings.isEmpty ? 54 : 104,
+    height: _windDependentActivityIds.contains(activity.id)
+        ? (timeWindowRatings.isEmpty ? 78 : 144)
+        : (timeWindowRatings.isEmpty ? 54 : 104),
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -2415,6 +2491,28 @@ class _TodayActivityRow extends StatelessWidget {
             ),
           ],
         ),
+        if (_windDependentActivityIds.contains(activity.id))
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 31),
+              child: TextButton.icon(
+                key: ValueKey('activity-wind-link-${activity.id}'),
+                onPressed: onViewWindTrend,
+                icon: const Icon(Icons.air_rounded, size: 15),
+                label: const Text('Windverlauf ansehen'),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.deepBlue,
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                  textStyle: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
         if (timeWindowRatings.isNotEmpty) ...[
           const SizedBox(height: 5),
           Padding(
@@ -6418,11 +6516,15 @@ class _WindForecastCard extends StatefulWidget {
     required this.forecast,
     required this.loading,
     required this.onLoad,
+    this.initiallyExpanded = false,
+    this.activityContextNotice,
   });
 
   final WindForecast? forecast;
   final bool loading;
   final VoidCallback onLoad;
+  final bool initiallyExpanded;
+  final String? activityContextNotice;
 
   @override
   State<_WindForecastCard> createState() => _WindForecastCardState();
@@ -6433,6 +6535,35 @@ class _WindForecastCardState extends State<_WindForecastCard> {
   var _expanded = false;
 
   @override
+  void initState() {
+    super.initState();
+    if (widget.initiallyExpanded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openFromRequest());
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _WindForecastCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initiallyExpanded && !oldWidget.initiallyExpanded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openFromRequest());
+    }
+  }
+
+  void _openFromRequest() {
+    if (!mounted || _expanded) return;
+    setState(() => _expanded = true);
+    if (widget.forecast == null && !widget.loading) widget.onLoad();
+  }
+
+  void _setExpanded(bool expanded) {
+    setState(() => _expanded = expanded);
+    if (expanded && widget.forecast == null && !widget.loading) {
+      widget.onLoad();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) => _WindForecastShell(
     child: Material(
       color: Colors.transparent,
@@ -6440,12 +6571,8 @@ class _WindForecastCardState extends State<_WindForecastCard> {
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
           key: const ValueKey('wind-forecast-card'),
-          onExpansionChanged: (value) {
-            setState(() => _expanded = value);
-            if (value && widget.forecast == null && !widget.loading) {
-              widget.onLoad();
-            }
-          },
+          initiallyExpanded: widget.initiallyExpanded,
+          onExpansionChanged: _setExpanded,
           tilePadding: const EdgeInsets.symmetric(horizontal: 2),
           childrenPadding: const EdgeInsets.only(top: 5),
           leading: const Icon(Icons.air_rounded, color: AppColors.blue),
@@ -6464,8 +6591,25 @@ class _WindForecastCardState extends State<_WindForecastCard> {
           children: _expanded
               ? [
                   Padding(
+                    key: const ValueKey('wind-forecast-content'),
                     padding: const EdgeInsets.only(top: 10),
-                    child: _buildContent(context),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (widget.activityContextNotice != null) ...[
+                          Text(
+                            widget.activityContextNotice!,
+                            style: const TextStyle(
+                              color: Color(0xFF71809A),
+                              fontSize: 11,
+                              height: 1.3,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        _buildContent(context),
+                      ],
+                    ),
                   ),
                 ]
               : const [],

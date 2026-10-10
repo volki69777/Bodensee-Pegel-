@@ -73,6 +73,61 @@ void main() {
     expect(windCard, findsOneWidget);
   });
 
+  testWidgets('shows wind links only for wind-dependent activities', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: TodayPage()));
+    await tester.pumpAndSettle();
+
+    for (final activity in const [
+      'sup_kajak',
+      'segeln',
+      'motorboot',
+      'kiten',
+    ]) {
+      expect(
+        find.byKey(ValueKey('activity-wind-link-$activity')),
+        findsOneWidget,
+      );
+    }
+    for (final activity in const ['angeln', 'baden']) {
+      expect(
+        find.byKey(ValueKey('activity-wind-link-$activity')),
+        findsNothing,
+      );
+    }
+  });
+
+  testWidgets('opens LIVE wind forecast with the selected activity station', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('nav-today')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('analysis-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+
+    final windLink = find.byKey(const ValueKey('activity-wind-link-sup_kajak'));
+    await tester.ensureVisible(windLink);
+    await tester.tap(windLink);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(DashboardPage), findsOneWidget);
+    expect(find.text('ROMANSHORN'), findsWidgets);
+    expect(find.byKey(const ValueKey('wind-forecast-content')), findsOneWidget);
+    expect(
+      find.textContaining('Die Windansicht zeigt ab jetzt'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('opens each stable main route directly', (
     WidgetTester tester,
   ) async {
