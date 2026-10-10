@@ -28,6 +28,7 @@ import 'pegelonline_service.dart';
 import 'station_data_cache.dart';
 import 'station_selection_service.dart';
 import 'vorarlberg_hydro_service.dart';
+import 'wind_forecast_service.dart';
 
 void main() => runApp(const BodenseePegelApp());
 
@@ -285,6 +286,12 @@ class _DashboardPageState extends State<DashboardPage> {
   final _favoritesService = FavoritesService();
   final _analysisService = AnalysisService();
   final _insightService = InsightService();
+  final _dwdWindForecastService = DwdForecastService();
+  final _meteoSwissWindForecastService = MeteoSwissForecastService();
+  final _berlingenWindForecastService = MeteoSwissForecastService(
+    station: MeteoSwissForecastStation.berlingen,
+  );
+  final _geoSphereWindForecastService = GeoSphereForecastService();
   final _liveDataCache = StationDataCache<StationLiveData>();
   final _insightCache = StationDataCache<BodenseeInsight?>();
   late Future<List<PegelStation>> _stations;
@@ -292,6 +299,7 @@ class _DashboardPageState extends State<DashboardPage> {
   late Future<StationEnvironmentData> _environmentData;
   late Future<List<String>> _favoriteUuids;
   late Future<BodenseeInsight?> _insight;
+  Future<WindForecast>? _windForecast;
   PegelStation _selectedStation = PegelOnlineService.konstanz;
   StationSelectionService? _stationSelection;
 
@@ -373,6 +381,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _liveData = _loadCachedLiveData(station);
       _environmentData = _loadEnvironmentData(station);
       _insight = _loadCachedInsight(station, _liveData);
+      _windForecast = null;
     });
   }
 
@@ -406,6 +415,9 @@ class _DashboardPageState extends State<DashboardPage> {
     _liveData = _loadCachedLiveData(_selectedStation);
     _environmentData = _loadEnvironmentData(_selectedStation);
     _insight = _loadCachedInsight(_selectedStation, _liveData);
+    if (_windForecast != null) {
+      _windForecast = _loadWindForecast(_selectedStation, forceRefresh: true);
+    }
   });
 
   @override
@@ -495,6 +507,39 @@ class _DashboardPageState extends State<DashboardPage> {
     final request = _environmentService.fetchFor(station);
     request.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return request;
+  }
+
+  Future<WindForecast> _loadWindForecast(
+    PegelStation station, {
+    bool forceRefresh = false,
+  }) async {
+    if (station.uuid == PegelOnlineService.konstanz.uuid) {
+      return WindForecast.fromDwd(
+        await _dwdWindForecastService.load(forceRefresh: forceRefresh),
+      );
+    }
+    if (station.uuid == BafuHydroService.romanshorn.uuid) {
+      return WindForecast.fromMeteoSwiss(
+        await _meteoSwissWindForecastService.load(forceRefresh: forceRefresh),
+      );
+    }
+    if (station.uuid == BafuHydroService.berlingen.uuid) {
+      return WindForecast.fromMeteoSwiss(
+        await _berlingenWindForecastService.load(forceRefresh: forceRefresh),
+      );
+    }
+    return WindForecast.fromGeoSphere(
+      await _geoSphereWindForecastService.load(forceRefresh: forceRefresh),
+    );
+  }
+
+  void _ensureWindForecast() {
+    if (_windForecast != null) return;
+    final future = _loadWindForecast(_selectedStation);
+    // The card owns the visible error state. Keep a listener while a page
+    // change disposes it so a delayed network failure is still handled.
+    unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+    setState(() => _windForecast = future);
   }
 
   Future<StationLiveData> _loadLiveData(PegelStation station) async {
@@ -624,6 +669,20 @@ class _DashboardPageState extends State<DashboardPage> {
                         : null,
                     waiting:
                         snapshot.connectionState == ConnectionState.waiting,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                FutureBuilder<WindForecast>(
+                  key: ValueKey('wind-forecast-${_selectedStation.uuid}'),
+                  future: _windForecast,
+                  builder: (context, snapshot) => _WindForecastCard(
+                    forecast: snapshot.hasData && !snapshot.hasError
+                        ? snapshot.data
+                        : null,
+                    loading:
+                        _windForecast != null &&
+                        snapshot.connectionState == ConnectionState.waiting,
+                    onLoad: _ensureWindForecast,
                   ),
                 ),
                 if (_showHvzForecastGraphic &&
@@ -6352,6 +6411,411 @@ class ForecastCard extends StatelessWidget {
           : closest,
     );
   }
+}
+
+class _WindForecastCard extends StatefulWidget {
+  const _WindForecastCard({
+    required this.forecast,
+    required this.loading,
+    required this.onLoad,
+  });
+
+  final WindForecast? forecast;
+  final bool loading;
+  final VoidCallback onLoad;
+
+  @override
+  State<_WindForecastCard> createState() => _WindForecastCardState();
+}
+
+class _WindForecastCardState extends State<_WindForecastCard> {
+  var _hours = 24;
+  var _expanded = false;
+
+  @override
+  Widget build(BuildContext context) => _WindForecastShell(
+    child: Material(
+      color: Colors.transparent,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          key: const ValueKey('wind-forecast-card'),
+          onExpansionChanged: (value) {
+            setState(() => _expanded = value);
+            if (value && widget.forecast == null && !widget.loading) {
+              widget.onLoad();
+            }
+          },
+          tilePadding: const EdgeInsets.symmetric(horizontal: 2),
+          childrenPadding: const EdgeInsets.only(top: 5),
+          leading: const Icon(Icons.air_rounded, color: AppColors.blue),
+          title: const Text(
+            'WIND & BÖEN',
+            style: TextStyle(
+              color: AppColors.deepBlue,
+              fontSize: 17,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          subtitle: const Text(
+            'Amtliche Windprognose',
+            style: TextStyle(color: Color(0xFF71809A), fontSize: 12),
+          ),
+          children: _expanded
+              ? [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: _buildContent(context),
+                  ),
+                ]
+              : const [],
+        ),
+      ),
+    ),
+  );
+
+  Widget _buildContent(BuildContext context) {
+    final forecast = widget.forecast;
+    if (forecast == null) {
+      return widget.loading
+          ? const _WindForecastMessage('Windprognose wird geladen …')
+          : const _WindForecastMessage(
+              'Wind- und Böenprognose ist derzeit nicht verfügbar.',
+            );
+    }
+    final now = DateTime.now().toUtc();
+    final points24 = WindForecastSelection.forDuration(
+      points: forecast.points,
+      nowUtc: now,
+      duration: const Duration(hours: 24),
+    );
+    final points48 = WindForecastSelection.forDuration(
+      points: forecast.points,
+      nowUtc: now,
+      duration: const Duration(hours: 48),
+    );
+    final supports48Hours = points48.length > points24.length;
+    final selectedHours = supports48Hours ? _hours : 24;
+    final points = selectedHours == 48 ? points48 : points24;
+    final next = WindForecastSelection.nextUsable(points);
+    final location = WindForecastTimeZones.forSource(forecast.source);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Spacer(),
+            _WindRangeButton(
+              label: '24 h',
+              selected: selectedHours == 24,
+              onTap: () => setState(() => _hours = 24),
+            ),
+            if (supports48Hours) ...[
+              const SizedBox(width: 5),
+              _WindRangeButton(
+                label: '48 h',
+                selected: selectedHours == 48,
+                onTap: () => setState(() => _hours = 48),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Prognose · ${forecast.sourceLabel}',
+          style: const TextStyle(color: Color(0xFF71809A), fontSize: 12),
+        ),
+        const SizedBox(height: 14),
+        if (next == null)
+          const _WindForecastMessage(
+            'Für die nächsten Stunden liegen keine Wind- oder Böenwerte vor.',
+          )
+        else ...[
+          _WindForecastSummary(point: next, location: location),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 194,
+            width: double.infinity,
+            child: CustomPaint(
+              painter: _WindForecastChartPainter(
+                points: points,
+                location: location,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Wrap(
+            spacing: 14,
+            children: [
+              _WindLegend(color: AppColors.blue, label: 'Wind'),
+              _WindLegend(color: Color(0xFF13A7B8), label: 'Böen'),
+            ],
+          ),
+        ],
+        if (forecast.issuedAtUtc != null) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Stand: ${_windLocalTimestamp(forecast.issuedAtUtc!, location)}',
+            style: const TextStyle(color: Color(0xFF8B98AC), fontSize: 11),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _WindForecastShell extends StatelessWidget {
+  const _WindForecastShell({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(18),
+    decoration: _cardDecoration(),
+    child: child,
+  );
+}
+
+class _WindForecastMessage extends StatelessWidget {
+  const _WindForecastMessage(this.message);
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      const Icon(Icons.info_outline_rounded, color: Color(0xFF71809A)),
+      const SizedBox(width: 9),
+      Expanded(
+        child: Text(
+          message,
+          style: const TextStyle(color: Color(0xFF71809A), fontSize: 13),
+        ),
+      ),
+    ],
+  );
+}
+
+class _WindRangeButton extends StatelessWidget {
+  const _WindRangeButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    borderRadius: BorderRadius.circular(10),
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: selected ? const Color(0xFFE7F1FF) : const Color(0xFFF5F8FD),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: selected ? AppColors.deepBlue : const Color(0xFF64738D),
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    ),
+  );
+}
+
+class _WindForecastSummary extends StatelessWidget {
+  const _WindForecastSummary({required this.point, required this.location});
+  final WindForecastPoint point;
+  final tz.Location location;
+
+  @override
+  Widget build(BuildContext context) {
+    final wind = point.windKilometersPerHour;
+    final gust = point.gustKilometersPerHour;
+    final beaufort = BeaufortScale.fromKilometersPerHour(wind);
+    final direction = WindDirection.abbreviation(point.directionDegrees);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F9FF),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Nächster Prognosezeitpunkt · ${_windLocalTimestamp(point.timestampUtc, location)}',
+            style: const TextStyle(color: Color(0xFF71809A), fontSize: 11),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            wind == null
+                ? 'Wind nicht verfügbar'
+                : 'Wind ${wind.round()} km/h · $beaufort Bft',
+            style: const TextStyle(
+              color: AppColors.navy,
+              fontSize: 17,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            [
+              if (gust != null) 'Böen ${gust.round()} km/h',
+              if (direction != null)
+                '$direction · ${point.directionDegrees!.round()}°',
+              if (BeaufortScale.label(beaufort) != null)
+                BeaufortScale.label(beaufort)!,
+            ].join('   '),
+            style: const TextStyle(color: Color(0xFF475A78), fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WindLegend extends StatelessWidget {
+  const _WindLegend({required this.color, required this.label});
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(width: 16, height: 3, color: color),
+      const SizedBox(width: 5),
+      Text(
+        label,
+        style: const TextStyle(color: Color(0xFF64738D), fontSize: 11),
+      ),
+    ],
+  );
+}
+
+String _windLocalTimestamp(DateTime utc, tz.Location location) {
+  final local = tz.TZDateTime.from(utc, location);
+  return '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')} · '
+      '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+}
+
+class _WindForecastChartPainter extends CustomPainter {
+  const _WindForecastChartPainter({
+    required this.points,
+    required this.location,
+  });
+  final List<WindForecastPoint> points;
+  final tz.Location location;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const left = 30.0;
+    const top = 8.0;
+    const right = 4.0;
+    const bottom = 24.0;
+    final chart = Rect.fromLTWH(
+      left,
+      top,
+      size.width - left - right,
+      size.height - top - bottom,
+    );
+    final values = <double>[
+      for (final point in points) ...[
+        if (point.windKilometersPerHour != null) point.windKilometersPerHour!,
+        if (point.gustKilometersPerHour != null) point.gustKilometersPerHour!,
+      ],
+    ];
+    if (values.isEmpty || chart.width <= 0 || chart.height <= 0) return;
+    final rawMin = values.reduce(math.min);
+    final rawMax = values.reduce(math.max);
+    final step = rawMax - rawMin <= 15 ? 5.0 : 10.0;
+    final minValue = math
+        .max(0, ((rawMin - step) / step).floor() * step)
+        .toDouble();
+    final maxValue = math
+        .max(minValue + step, ((rawMax + step) / step).ceil() * step)
+        .toDouble();
+    final grid = Paint()
+      ..color = const Color(0xFFE7EEF7)
+      ..strokeWidth = 1;
+    final label = TextPainter(textDirection: TextDirection.ltr);
+    for (var i = 0; i < 3; i++) {
+      final y = chart.top + chart.height * i / 2;
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), grid);
+      final value = maxValue - (maxValue - minValue) * i / 2;
+      label.text = TextSpan(
+        text: '${value.round()}',
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 9),
+      );
+      label.layout();
+      label.paint(canvas, Offset(0, y - label.height / 2));
+    }
+    double x(int index) =>
+        chart.left + chart.width * index / math.max(1, points.length - 1);
+    double y(double value) =>
+        chart.bottom -
+        (value - minValue) / (maxValue - minValue) * chart.height;
+    void drawSeries(double? Function(WindForecastPoint) valueOf, Color color) {
+      final paint = Paint()
+        ..color = color
+        ..strokeWidth = 2.4
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+      Path? path;
+      DateTime? previousTimestamp;
+      for (var index = 0; index < points.length; index++) {
+        final value = valueOf(points[index]);
+        if (value == null) {
+          if (path != null) canvas.drawPath(path, paint);
+          path = null;
+          previousTimestamp = null;
+          continue;
+        }
+        final position = Offset(x(index), y(value));
+        final hasTimeGap =
+            previousTimestamp != null &&
+            points[index].timestampUtc.difference(previousTimestamp) >
+                const Duration(minutes: 90);
+        if (path == null || hasTimeGap) {
+          if (path != null) canvas.drawPath(path, paint);
+          path = Path()..moveTo(position.dx, position.dy);
+        } else {
+          path.lineTo(position.dx, position.dy);
+        }
+        previousTimestamp = points[index].timestampUtc;
+      }
+      if (path != null) canvas.drawPath(path, paint);
+    }
+
+    drawSeries((point) => point.gustKilometersPerHour, const Color(0xFF13A7B8));
+    drawSeries((point) => point.windKilometersPerHour, AppColors.blue);
+    final labels = <int>{0, points.length ~/ 2, points.length - 1};
+    for (final index in labels) {
+      if (index < 0 || index >= points.length) continue;
+      final local = tz.TZDateTime.from(points[index].timestampUtc, location);
+      label.text = TextSpan(
+        text:
+            '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}',
+        style: const TextStyle(color: Color(0xFF71809A), fontSize: 9),
+      );
+      label.layout();
+      label.paint(canvas, Offset(x(index) - label.width / 2, chart.bottom + 7));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WindForecastChartPainter oldDelegate) =>
+      oldDelegate.points != points || oldDelegate.location != location;
 }
 
 /// Displays the unmodified official HVZ graphic. It deliberately has no

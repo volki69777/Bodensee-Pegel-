@@ -56,6 +56,23 @@ void main() {
     expect(hvzForecast, findsNothing);
   });
 
+  testWidgets('keeps the collapsible wind forecast section across stations', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    final windCard = find.byKey(const ValueKey('wind-forecast-card'));
+    expect(windCard, findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('live-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+
+    expect(windCard, findsOneWidget);
+  });
+
   testWidgets('opens each stable main route directly', (
     WidgetTester tester,
   ) async {
