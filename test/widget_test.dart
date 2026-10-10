@@ -259,6 +259,23 @@ void main() {
     );
   });
 
+  testWidgets('motorboat profile can be selected in activity settings', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: ActivitiesBoatsPage()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('MOTORBOOT-BEWERTUNG'), findsOneWidget);
+    await tester.tap(find.text('Bisherige Standardbewertung'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Kleines offenes Motorboot').last);
+    await tester.pumpAndSettle();
+
+    await tester.pumpWidget(const MaterialApp(home: ActivitiesBoatsPage()));
+    await tester.pumpAndSettle();
+    expect(find.text('Kleines offenes Motorboot'), findsOneWidget);
+  });
+
   testWidgets('edits an existing boat without creating a duplicate', (
     WidgetTester tester,
   ) async {

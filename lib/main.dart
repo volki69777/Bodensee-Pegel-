@@ -715,6 +715,7 @@ class _TodayPageState extends State<TodayPage> {
   Future<StationEnvironmentData>? _bregenzEnvironment;
   List<String> _selectedActivityIds = const [];
   bool _activitiesLoaded = false;
+  MotorboatRatingProfile? _motorboatRatingProfile;
 
   @override
   void initState() {
@@ -748,6 +749,7 @@ class _TodayPageState extends State<TodayPage> {
     if (mounted) {
       setState(() {
         _selectedActivityIds = data.selectedActivities;
+        _motorboatRatingProfile = data.motorboatRatingProfile;
         _activitiesLoaded = true;
       });
     }
@@ -923,11 +925,24 @@ class _TodayPageState extends State<TodayPage> {
       7,
       (index) => start.add(Duration(days: index)),
     );
-    final visibleActivities = !_activitiesLoaded || _selectedActivityIds.isEmpty
+    final selectedActivities =
+        !_activitiesLoaded || _selectedActivityIds.isEmpty
         ? plannerActivities
         : plannerActivities
               .where((activity) => _selectedActivityIds.contains(activity.id))
               .toList(growable: false);
+    final visibleActivities = selectedActivities
+        .map(
+          (activity) =>
+              activity.id == 'motorboot' && _motorboatRatingProfile != null
+              ? _PlannerActivity(
+                  activity.id,
+                  _motorboatRatingProfile!.activityLabel,
+                  activity.icon,
+                )
+              : activity,
+        )
+        .toList(growable: false);
     return Scaffold(
       bottomNavigationBar: _BottomNavigation(
         onLive: () => _navigateTo(context, AppDestination.live),
@@ -1214,6 +1229,7 @@ class _TodayPageState extends State<TodayPage> {
               activityId: activity.id,
               data: _activityForecastData(
                 forecastsByDay[day],
+                motorboatProfile: _motorboatRatingProfile,
                 waterTemperatureCelsius:
                     _station.uuid == VorarlbergHydroService.bregenz.uuid &&
                         day == _dayOnly(DateTime.now())
@@ -1246,6 +1262,7 @@ class _TodayPageState extends State<TodayPage> {
               activityId: activity.id,
               data: _activityTimeWindowForecastData(
                 forecast,
+                motorboatProfile: _motorboatRatingProfile,
                 // A local VOWIS water measurement is a current observation,
                 // not a forecast. It is therefore used only in the genuinely
                 // running Bregenz interval and never propagated to later ones.
@@ -1258,8 +1275,12 @@ class _TodayPageState extends State<TodayPage> {
             ),
         },
     };
-    return Column(
+    Widget content(List<OfficialWarning> motorboatWarnings) => Column(
       children: [
+        if (motorboatWarnings.isNotEmpty) ...[
+          _MotorboatOfficialWarningNotice(warnings: motorboatWarnings),
+          const SizedBox(height: 14),
+        ],
         _TodayActivitiesSection(
           activities: activities,
           ratings: ratingsByDay[_selectedDate] ?? const {},
@@ -1273,11 +1294,33 @@ class _TodayPageState extends State<TodayPage> {
         ),
       ],
     );
+    final warningLocation = switch (_station.uuid) {
+      final id when id == PegelOnlineService.konstanz.uuid =>
+        OfficialWarningTimeZones.berlin,
+      final id when id == VorarlbergHydroService.bregenz.uuid =>
+        OfficialWarningTimeZones.vienna,
+      _ => null,
+    };
+    if (_officialWarnings == null || warningLocation == null) {
+      return content(const []);
+    }
+    return FutureBuilder<OfficialWarnings>(
+      future: _officialWarnings,
+      builder: (context, snapshot) => content(
+        snapshot.hasData
+            ? snapshot.data!
+                  .forLocalDay(_selectedDate, warningLocation)
+                  .where(_isMotorboatRelevantOfficialWarning)
+                  .toList(growable: false)
+            : const [],
+      ),
+    );
   }
 
   ActivityForecastData _activityForecastData(
     _TodayForecastValues? forecast, {
     double? waterTemperatureCelsius,
+    MotorboatRatingProfile? motorboatProfile,
   }) => ActivityForecastData(
     temperatureMinimumCelsius: forecast?.temperatureMinimumCelsius,
     temperatureMaximumCelsius: forecast?.temperatureMaximumCelsius,
@@ -1285,11 +1328,13 @@ class _TodayPageState extends State<TodayPage> {
     windKilometersPerHour: forecast?.representativeWindKilometersPerHour,
     gustKilometersPerHour: forecast?.maximumGustKilometersPerHour,
     waterTemperatureCelsius: waterTemperatureCelsius,
+    motorboatProfile: motorboatProfile,
   );
 
   ActivityForecastData _activityTimeWindowForecastData(
     ActivityTimeWindowForecast forecast, {
     double? waterTemperatureCelsius,
+    MotorboatRatingProfile? motorboatProfile,
   }) => ActivityForecastData(
     temperatureMinimumCelsius: forecast.temperatureMinimumCelsius,
     temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
@@ -1297,6 +1342,7 @@ class _TodayPageState extends State<TodayPage> {
     windKilometersPerHour: forecast.representativeWindKilometersPerHour,
     gustKilometersPerHour: forecast.maximumGustKilometersPerHour,
     waterTemperatureCelsius: waterTemperatureCelsius,
+    motorboatProfile: motorboatProfile,
   );
 }
 
@@ -2163,6 +2209,56 @@ class _TodayActivitiesSection extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Kept separate from the score: official warnings remain an authority-issued
+/// notice and never silently alter a leisure score.
+bool _isMotorboatRelevantOfficialWarning(OfficialWarning warning) {
+  final type = warning.nativeType.toLowerCase();
+  return type.contains('gewitter') ||
+      type.contains('thunder') ||
+      type.contains('sturm') ||
+      type.contains('wind');
+}
+
+class _MotorboatOfficialWarningNotice extends StatelessWidget {
+  const _MotorboatOfficialWarningNotice({required this.warnings});
+
+  final List<OfficialWarning> warnings;
+
+  @override
+  Widget build(BuildContext context) {
+    final types = warnings
+        .map((warning) => warning.nativeType)
+        .toSet()
+        .join(', ');
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4DD),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE6AA45)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: Color(0xFF9A5B00)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Amtliche Wetterwarnung: $types\nSiehe Warnungen in der Tagesübersicht.',
+              style: const TextStyle(
+                color: Color(0xFF714300),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                height: 1.3,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _TodayActivityRow extends StatelessWidget {
@@ -3102,6 +3198,7 @@ class _ActivitiesBoatsPageState extends State<ActivitiesBoatsPage> {
   late Future<ActivitiesBoatsData> _data;
   List<String> _selectedActivities = const [];
   List<BoatProfile> _boats = const [];
+  MotorboatRatingProfile? _motorboatRatingProfile;
 
   @override
   void initState() {
@@ -3117,6 +3214,7 @@ class _ActivitiesBoatsPageState extends State<ActivitiesBoatsPage> {
     );
     _selectedActivities = data.selectedActivities;
     _boats = data.boats;
+    _motorboatRatingProfile = data.motorboatRatingProfile;
     return data;
   }
 
@@ -3129,6 +3227,13 @@ class _ActivitiesBoatsPageState extends State<ActivitiesBoatsPage> {
     }
     setState(() => _selectedActivities = updated);
     await _service.saveActivities(updated);
+  }
+
+  Future<void> _setMotorboatRatingProfile(
+    MotorboatRatingProfile? profile,
+  ) async {
+    setState(() => _motorboatRatingProfile = profile);
+    await _service.saveMotorboatRatingProfile(profile);
   }
 
   Future<void> _addBoat() async {
@@ -3204,6 +3309,57 @@ class _ActivitiesBoatsPageState extends State<ActivitiesBoatsPage> {
                           )
                           .toList(),
                     ),
+            ),
+            const SizedBox(height: 18),
+            _MoreSection(
+              title: 'MOTORBOOT-BEWERTUNG',
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    DropdownButtonFormField<MotorboatRatingProfile?>(
+                      key: ValueKey(
+                        'motorboat-rating-profile-field-${_motorboatRatingProfile?.name ?? 'legacy'}',
+                      ),
+                      initialValue: _motorboatRatingProfile,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Bootsklasse',
+                      ),
+                      hint: const Text('Bisherige Standardbewertung'),
+                      items: const [
+                        DropdownMenuItem<MotorboatRatingProfile?>(
+                          value: null,
+                          child: Text('Bisherige Standardbewertung'),
+                        ),
+                        DropdownMenuItem<MotorboatRatingProfile?>(
+                          value: MotorboatRatingProfile.smallOpen,
+                          child: Text('Kleines offenes Motorboot'),
+                        ),
+                        DropdownMenuItem<MotorboatRatingProfile?>(
+                          value: MotorboatRatingProfile.cabin,
+                          child: Text('Kajütboot'),
+                        ),
+                        DropdownMenuItem<MotorboatRatingProfile?>(
+                          value: MotorboatRatingProfile.yacht,
+                          child: Text('Größere Motoryacht'),
+                        ),
+                      ],
+                      onChanged: loading ? null : _setMotorboatRatingProfile,
+                    ),
+                    const SizedBox(height: 9),
+                    const Text(
+                      'Konservative App-Heuristik aus Wind, Böen und Niederschlag. Keine Sicherheitsbewertung.',
+                      style: TextStyle(
+                        color: Color(0xFF71809A),
+                        fontSize: 12,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 18),
             _MoreSection(

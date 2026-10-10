@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'activity_rating_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum BoatType { motorboat, sailboat }
@@ -66,10 +67,12 @@ class ActivitiesBoatsData {
   const ActivitiesBoatsData({
     required this.selectedActivities,
     required this.boats,
+    this.motorboatRatingProfile,
   });
 
   final List<String> selectedActivities;
   final List<BoatProfile> boats;
+  final MotorboatRatingProfile? motorboatRatingProfile;
 }
 
 /// Stores the user's optional planner preferences locally on the device.
@@ -79,6 +82,7 @@ class ActivitiesBoatsService {
 
   static const activitiesKey = 'selected_lake_activities_v1';
   static const boatsKey = 'boat_profiles_v1';
+  static const motorboatRatingProfileKey = 'motorboat_rating_profile_v1';
 
   final SharedPreferencesAsync _preferences;
 
@@ -91,6 +95,12 @@ class ActivitiesBoatsService {
           .where(validActivities.contains)
           .toList(growable: false);
       final rawBoats = await _preferences.getString(boatsKey);
+      final rawMotorboatProfile = await _preferences.getString(
+        motorboatRatingProfileKey,
+      );
+      final motorboatRatingProfile = MotorboatRatingProfile.values
+          .where((profile) => profile.name == rawMotorboatProfile)
+          .firstOrNull;
       final decoded = rawBoats == null ? null : jsonDecode(rawBoats);
       final boats = decoded is List
           ? decoded
@@ -104,6 +114,7 @@ class ActivitiesBoatsService {
       return ActivitiesBoatsData(
         selectedActivities: selectedActivities,
         boats: boats,
+        motorboatRatingProfile: motorboatRatingProfile,
       );
     } catch (_) {
       return const ActivitiesBoatsData(selectedActivities: [], boats: []);
@@ -117,4 +128,14 @@ class ActivitiesBoatsService {
     boatsKey,
     jsonEncode(boats.map((boat) => boat.toJson()).toList()),
   );
+
+  Future<void> saveMotorboatRatingProfile(
+    MotorboatRatingProfile? profile,
+  ) async {
+    if (profile == null) {
+      await _preferences.remove(motorboatRatingProfileKey);
+      return;
+    }
+    await _preferences.setString(motorboatRatingProfileKey, profile.name);
+  }
 }

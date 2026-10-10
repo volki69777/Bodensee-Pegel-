@@ -83,6 +83,67 @@ void main() {
       expect(rating.level, ActivityRatingLevel.good);
       expect(rating.reason, 'Mäßiger Niederschlag · 1,9 mm');
     });
+
+    test('keeps the legacy result until a boat class is selected', () {
+      final legacy = ActivityRatingService.rate(
+        activityId: 'motorboot',
+        data: data(wind: 20, gust: 30),
+      );
+      expect(legacy.level, ActivityRatingLevel.veryGood);
+    });
+
+    test('applies all three conservative motorboat heuristics', () {
+      ActivityRating ratingFor(MotorboatRatingProfile profile) =>
+          ActivityRatingService.rate(
+            activityId: 'motorboot',
+            data: data(wind: 27, gust: 38).withMotorboatProfile(profile),
+          );
+
+      final small = ratingFor(MotorboatRatingProfile.smallOpen);
+      final cabin = ratingFor(MotorboatRatingProfile.cabin);
+      final yacht = ratingFor(MotorboatRatingProfile.yacht);
+
+      expect(small.level, ActivityRatingLevel.limited);
+      expect(cabin.level, ActivityRatingLevel.good);
+      expect(yacht.level, ActivityRatingLevel.good);
+      expect(small.score, lessThanOrEqualTo(cabin.score!));
+      expect(cabin.score, lessThanOrEqualTo(yacht.score!));
+    });
+
+    test('uses the gust difference as a transparent limiting reason', () {
+      final rating = ActivityRatingService.rate(
+        activityId: 'motorboot',
+        data: data(
+          wind: 12,
+          gust: 42,
+        ).withMotorboatProfile(MotorboatRatingProfile.smallOpen),
+      );
+      expect(rating.level, ActivityRatingLevel.unsuitable);
+      expect(rating.reason, 'Stark böig: 42 km/h Böen bei 12 km/h Wind');
+
+      final gusty = ActivityRatingService.rate(
+        activityId: 'motorboot',
+        data: data(
+          wind: 8,
+          gust: 31,
+        ).withMotorboatProfile(MotorboatRatingProfile.smallOpen),
+      );
+      expect(gusty.level, ActivityRatingLevel.limited);
+      expect(gusty.reason, 'Stark böig: 31 km/h Böen bei 8 km/h Wind');
+    });
+
+    test('does not treat missing optional gusts or rain as zero', () {
+      final rating = ActivityRatingService.rate(
+        activityId: 'motorboot',
+        data: data(
+          wind: 10,
+          gust: null,
+          rain: null,
+        ).withMotorboatProfile(MotorboatRatingProfile.smallOpen),
+      );
+      expect(rating.level, ActivityRatingLevel.veryGood);
+      expect(rating.score, 10);
+    });
   });
 
   group('Kiten', () {
@@ -242,4 +303,16 @@ extension on ActivityForecastData {
     waterTemperatureCelsius: waterTemperatureCelsius,
     warningSeverity: ActivityWarningSeverity.severe,
   );
+
+  ActivityForecastData withMotorboatProfile(MotorboatRatingProfile profile) =>
+      ActivityForecastData(
+        temperatureMinimumCelsius: temperatureMinimumCelsius,
+        temperatureMaximumCelsius: temperatureMaximumCelsius,
+        precipitationMillimeters: precipitationMillimeters,
+        windKilometersPerHour: windKilometersPerHour,
+        gustKilometersPerHour: gustKilometersPerHour,
+        waterTemperatureCelsius: waterTemperatureCelsius,
+        motorboatProfile: profile,
+        warningSeverity: warningSeverity,
+      );
 }

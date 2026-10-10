@@ -11,6 +11,27 @@ enum ActivityRatingLevel { veryGood, good, limited, unsuitable, unavailable }
 
 enum ActivityWarningSeverity { none, severe }
 
+/// A voluntary profile for the motorboat activity.
+///
+/// The profiles are deliberately conservative app heuristics, not nautical
+/// safety limits. They only differentiate the existing leisure suitability
+/// score using the forecast values already available in the app.
+enum MotorboatRatingProfile { smallOpen, cabin, yacht }
+
+extension MotorboatRatingProfileLabel on MotorboatRatingProfile {
+  String get label => switch (this) {
+    MotorboatRatingProfile.smallOpen => 'Kleines offenes Motorboot',
+    MotorboatRatingProfile.cabin => 'Kajütboot',
+    MotorboatRatingProfile.yacht => 'Größere Motoryacht',
+  };
+
+  String get activityLabel => switch (this) {
+    MotorboatRatingProfile.smallOpen => 'Motorboot (klein)',
+    MotorboatRatingProfile.cabin => 'Motorboot (Kajütboot)',
+    MotorboatRatingProfile.yacht => 'Motorboot (Motoryacht)',
+  };
+}
+
 class ActivityForecastData {
   const ActivityForecastData({
     this.temperatureMinimumCelsius,
@@ -19,6 +40,7 @@ class ActivityForecastData {
     this.windKilometersPerHour,
     this.gustKilometersPerHour,
     this.waterTemperatureCelsius,
+    this.motorboatProfile,
     this.warningSeverity = ActivityWarningSeverity.none,
   });
 
@@ -28,6 +50,7 @@ class ActivityForecastData {
   final double? windKilometersPerHour;
   final double? gustKilometersPerHour;
   final double? waterTemperatureCelsius;
+  final MotorboatRatingProfile? motorboatProfile;
 
   /// Reserved for a future official warning source. No warning data is passed
   /// in V1, but the explicit override keeps that later extension central.
@@ -130,8 +153,22 @@ abstract final class ActivityRatingService {
         (_descending(data.gustKilometersPerHour, 40, 55), .35),
       ]),
       'motorboot' => _weighted(<(double?, double)>[
-        (_descending(data.windKilometersPerHour, 20, 38), .45),
-        (_descending(data.gustKilometersPerHour, 30, 50), .30),
+        (
+          _descending(
+            data.windKilometersPerHour,
+            _motorboatThresholds(data.motorboatProfile).veryGoodWind,
+            _motorboatThresholds(data.motorboatProfile).unsuitableWind,
+          ),
+          .45,
+        ),
+        (
+          _descending(
+            data.gustKilometersPerHour,
+            _motorboatThresholds(data.motorboatProfile).veryGoodGust,
+            _motorboatThresholds(data.motorboatProfile).unsuitableGust,
+          ),
+          .30,
+        ),
         (_descending(data.precipitationMillimeters, 1, 8), .25),
       ]),
       'kiten' => _weighted(<(double?, double)>[
@@ -303,6 +340,14 @@ abstract final class ActivityRatingService {
   }
 
   static ActivityRating _motorboat(ActivityForecastData data) {
+    final profile = data.motorboatProfile;
+    if (profile == null) return _legacyMotorboat(data);
+    return _motorboatForProfile(data, _motorboatThresholds(profile));
+  }
+
+  /// Keeps the original Motorboot V1 result intact until the person has
+  /// explicitly selected a profile in the settings.
+  static ActivityRating _legacyMotorboat(ActivityForecastData data) {
     final wind = data.windKilometersPerHour;
     final gust = data.gustKilometersPerHour;
     if (_above(wind, 38)) return _unsuitableWind(wind!);
@@ -322,6 +367,57 @@ abstract final class ActivityRatingService {
       return ActivityRating(
         ActivityRatingLevel.good,
         _motorboatGoodReason(data),
+      );
+    }
+    return const ActivityRating(
+      ActivityRatingLevel.good,
+      'Wetterdaten vorhanden',
+    );
+  }
+
+  static ActivityRating _motorboatForProfile(
+    ActivityForecastData data,
+    _MotorboatThresholds thresholds,
+  ) {
+    final wind = data.windKilometersPerHour;
+    final gust = data.gustKilometersPerHour;
+    final gustDifference = wind == null || gust == null ? null : gust - wind;
+    if (_above(wind, thresholds.unsuitableWind)) return _unsuitableWind(wind!);
+    if (_above(gustDifference, thresholds.unsuitableGustDifference)) {
+      return _motorboatGustinessReason(
+        ActivityRatingLevel.unsuitable,
+        wind!,
+        gust!,
+      );
+    }
+    if (_above(gust, thresholds.unsuitableGust)) return _unsuitableGust(gust!);
+    if (_between(wind, thresholds.limitedWindStart, thresholds.unsuitableWind)) {
+      return _limitedWind(wind!);
+    }
+    if (_above(gustDifference, thresholds.limitedGustDifference)) {
+      return _motorboatGustinessReason(
+        ActivityRatingLevel.limited,
+        wind!,
+        gust!,
+      );
+    }
+    if (_between(gust, thresholds.limitedGustStart, thresholds.unsuitableGust)) {
+      return _limitedGust(gust!);
+    }
+    if (_heavyRain(data)) return _limitedRainFor(data);
+    if (_atMost(wind, thresholds.veryGoodWind) &&
+        _atMostOrMissing(gust, thresholds.veryGoodGust) &&
+        _littleRainOrMissing(data)) {
+      return const ActivityRating(
+        ActivityRatingLevel.veryGood,
+        'Wenig Wind und kaum Niederschlag',
+      );
+    }
+    if (_atMost(wind, thresholds.goodWind) &&
+        _atMostOrMissing(gust, thresholds.goodGust)) {
+      return ActivityRating(
+        ActivityRatingLevel.good,
+        _motorboatGoodReason(data, thresholds),
       );
     }
     return const ActivityRating(
@@ -524,12 +620,23 @@ abstract final class ActivityRatingService {
     return 'Günstige Wetterwerte';
   }
 
-  static String _motorboatGoodReason(ActivityForecastData data) {
+  static String _motorboatGoodReason(
+    ActivityForecastData data, [
+    _MotorboatThresholds? thresholds,
+  ]) {
+    final rules = thresholds ?? _motorboatThresholds(null);
     if (_moderateRain(data)) return _moderateRainReason(data);
-    if (_above(data.gustKilometersPerHour, 30)) {
+    final wind = data.windKilometersPerHour;
+    final gust = data.gustKilometersPerHour;
+    if (wind != null &&
+        gust != null &&
+        gust - wind > rules.veryGoodGustDifference) {
+      return 'Böen bis ${gust.round()} km/h bei ${wind.round()} km/h Wind';
+    }
+    if (_above(gust, rules.veryGoodGust)) {
       return 'Böen bis ${data.gustKilometersPerHour!.round()} km/h';
     }
-    if (_above(data.windKilometersPerHour, 20)) {
+    if (_above(wind, rules.veryGoodWind)) {
       return 'Wind ${data.windKilometersPerHour!.round()} km/h';
     }
     return 'Günstige Wetterwerte';
@@ -575,4 +682,89 @@ abstract final class ActivityRatingService {
         ActivityRatingLevel.unsuitable,
         'Stark böig: ${gust.round()} km/h Böen bei ${wind.round()} km/h Wind',
       );
+
+  static ActivityRating _motorboatGustinessReason(
+    ActivityRatingLevel level,
+    double wind,
+    double gust,
+  ) => ActivityRating(
+    level,
+    'Stark böig: ${gust.round()} km/h Böen bei ${wind.round()} km/h Wind',
+  );
+
+  static _MotorboatThresholds _motorboatThresholds(
+    MotorboatRatingProfile? profile,
+  ) => switch (profile) {
+    // The previous station-independent V1 rules remain the compatibility
+    // baseline for users who have not chosen a profile.
+    null || MotorboatRatingProfile.cabin => const _MotorboatThresholds(
+      veryGoodWind: 20,
+      veryGoodGust: 30,
+      veryGoodGustDifference: 10,
+      goodWind: 28,
+      goodGust: 40,
+      limitedWindStart: 29,
+      limitedGustStart: 41,
+      limitedGustDifference: 20,
+      unsuitableWind: 38,
+      unsuitableGust: 50,
+      unsuitableGustDifference: 30,
+    ),
+    MotorboatRatingProfile.smallOpen => const _MotorboatThresholds(
+      veryGoodWind: 12,
+      veryGoodGust: 20,
+      veryGoodGustDifference: 8,
+      goodWind: 20,
+      goodGust: 30,
+      limitedWindStart: 21,
+      limitedGustStart: 31,
+      limitedGustDifference: 15,
+      unsuitableWind: 30,
+      unsuitableGust: 40,
+      unsuitableGustDifference: 25,
+    ),
+    MotorboatRatingProfile.yacht => const _MotorboatThresholds(
+      veryGoodWind: 25,
+      veryGoodGust: 35,
+      veryGoodGustDifference: 12,
+      goodWind: 33,
+      goodGust: 45,
+      limitedWindStart: 34,
+      limitedGustStart: 46,
+      limitedGustDifference: 25,
+      unsuitableWind: 43,
+      unsuitableGust: 55,
+      unsuitableGustDifference: 35,
+    ),
+  };
+}
+
+/// Conservative app heuristics, not navigation, seaworthiness, or safety
+/// limits. They are intentionally central so the UI and tests use one model.
+class _MotorboatThresholds {
+  const _MotorboatThresholds({
+    required this.veryGoodWind,
+    required this.veryGoodGust,
+    required this.veryGoodGustDifference,
+    required this.goodWind,
+    required this.goodGust,
+    required this.limitedWindStart,
+    required this.limitedGustStart,
+    required this.limitedGustDifference,
+    required this.unsuitableWind,
+    required this.unsuitableGust,
+    required this.unsuitableGustDifference,
+  });
+
+  final double veryGoodWind;
+  final double veryGoodGust;
+  final double veryGoodGustDifference;
+  final double goodWind;
+  final double goodGust;
+  final double limitedWindStart;
+  final double limitedGustStart;
+  final double limitedGustDifference;
+  final double unsuitableWind;
+  final double unsuitableGust;
+  final double unsuitableGustDifference;
 }

@@ -3,6 +3,7 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
 import 'package:bodensee_pegel/activities_boats_service.dart';
+import 'package:bodensee_pegel/activity_rating_service.dart';
 
 void main() {
   setUp(() {
@@ -27,5 +28,21 @@ void main() {
       orderedEquals(['Seestern', 'Albatros']),
     );
     expect(restored.boats.last.bootType, BoatType.motorboat);
+  });
+
+  test('stores and restores the optional motorboat rating profile', () async {
+    final service = ActivitiesBoatsService();
+    await service.saveMotorboatRatingProfile(MotorboatRatingProfile.smallOpen);
+
+    final restored = await ActivitiesBoatsService().load(
+      validActivities: const ['motorboot'],
+    );
+    expect(restored.motorboatRatingProfile, MotorboatRatingProfile.smallOpen);
+
+    await service.saveMotorboatRatingProfile(null);
+    final legacy = await ActivitiesBoatsService().load(
+      validActivities: const ['motorboot'],
+    );
+    expect(legacy.motorboatRatingProfile, isNull);
   });
 }

@@ -113,4 +113,53 @@ void main() {
     expect(rating.level, ActivityRatingLevel.veryGood);
     expect(rating.score, 10);
   });
+
+  test('motorboat profiles keep every score within its category band', () {
+    for (final profile in MotorboatRatingProfile.values) {
+      final rating = rate(
+        'motorboot',
+        ActivityForecastData(
+          windKilometersPerHour: 27,
+          gustKilometersPerHour: 38,
+          precipitationMillimeters: 0,
+          motorboatProfile: profile,
+        ),
+      );
+      expectScoreInCategory(rating);
+    }
+  });
+
+  test(
+    'motorboat profile scores remain reproducible for representative weather',
+    () {
+      final cases = <(double, double, double, double, double)>[
+        (10, 16, 10, 10, 10),
+        (27, 38, 4, 7.05, 7.9),
+        (34, 52, 2.5, 3.5, 5.2),
+      ];
+
+      for (final weather in cases) {
+        ActivityRating forProfile(MotorboatRatingProfile profile) => rate(
+          'motorboot',
+          ActivityForecastData(
+            windKilometersPerHour: weather.$1,
+            gustKilometersPerHour: weather.$2,
+            precipitationMillimeters: 0,
+            motorboatProfile: profile,
+          ),
+        );
+
+        final small = forProfile(MotorboatRatingProfile.smallOpen);
+        final cabin = forProfile(MotorboatRatingProfile.cabin);
+        final yacht = forProfile(MotorboatRatingProfile.yacht);
+        expect(small.score, closeTo(weather.$3, .001));
+        expect(cabin.score, closeTo(weather.$4, .001));
+        expect(yacht.score, closeTo(weather.$5, .001));
+        expect(small.score!, lessThanOrEqualTo(yacht.score!));
+        expectScoreInCategory(small);
+        expectScoreInCategory(cabin);
+        expectScoreInCategory(yacht);
+      }
+    },
+  );
 }
