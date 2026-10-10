@@ -36,6 +36,26 @@ void main() {
     expect(find.byType(DashboardPage), findsOneWidget);
   });
 
+  testWidgets('shows the development HVZ graphic only for Konstanz', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const BodenseePegelApp());
+    await tester.pumpAndSettle();
+
+    final hvzForecast = find.byKey(
+      const ValueKey('hvz-konzstanz-rhein-forecast'),
+    );
+    expect(hvzForecast, findsOneWidget);
+    expect(find.text('Amtliche HVZ-Prognose – Konstanz/Rhein'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('live-station-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ROMANSHORN').last);
+    await tester.pumpAndSettle();
+
+    expect(hvzForecast, findsNothing);
+  });
+
   testWidgets('opens each stable main route directly', (
     WidgetTester tester,
   ) async {

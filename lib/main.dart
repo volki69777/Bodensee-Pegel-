@@ -48,6 +48,21 @@ abstract final class AppColors {
   static const activityUnavailable = Color(0xFF71809A);
 }
 
+const _hvzKonstanzRheinForecastGraphicUrl =
+    'https://www.hvz.baden-wuerttemberg.de/gifs/00040-2001.GIF';
+
+/// The LUBW has not yet granted a written public-use permission for this
+/// graphic. It is visible in debug builds for technical verification only.
+/// Release builds remain off unless an explicit, future build decision sets
+/// the compile-time flag.
+const _enableHvzForecastGraphicForPublicBuild = bool.fromEnvironment(
+  'ENABLE_HVZ_FORECAST_GRAPHIC',
+  defaultValue: false,
+);
+
+bool get _showHvzForecastGraphic =>
+    kDebugMode || _enableHvzForecastGraphicForPublicBuild;
+
 class StationReading {
   const StationReading({
     required this.value,
@@ -611,6 +626,12 @@ class _DashboardPageState extends State<DashboardPage> {
                         snapshot.connectionState == ConnectionState.waiting,
                   ),
                 ),
+                if (_showHvzForecastGraphic &&
+                    _selectedStation.uuid == PegelOnlineService.konstanz.uuid)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 24),
+                    child: _HvzKonstanzRheinForecastCard(),
+                  ),
                 const SizedBox(height: 24),
                 FutureBuilder<StationEnvironmentData>(
                   key: ValueKey('environment-${_selectedStation.uuid}'),
@@ -6331,6 +6352,160 @@ class ForecastCard extends StatelessWidget {
           : closest,
     );
   }
+}
+
+/// Displays the unmodified official HVZ graphic. It deliberately has no
+/// parser, OCR, cache, or connection to the app's level calculations.
+class _HvzKonstanzRheinForecastCard extends StatefulWidget {
+  const _HvzKonstanzRheinForecastCard();
+
+  @override
+  State<_HvzKonstanzRheinForecastCard> createState() =>
+      _HvzKonstanzRheinForecastCardState();
+}
+
+class _HvzKonstanzRheinForecastCardState
+    extends State<_HvzKonstanzRheinForecastCard> {
+  bool _expanded = false;
+
+  Future<void> _openOriginalGraphic() async {
+    final opened = await launchUrl(
+      Uri.parse(_hvzKonstanzRheinForecastGraphicUrl),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Originalgrafik konnte nicht geöffnet werden.'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    decoration: _cardDecoration(),
+    child: Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(26),
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          key: const ValueKey('hvz-konzstanz-rhein-forecast'),
+          onExpansionChanged: (expanded) =>
+              setState(() => _expanded = expanded),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+          leading: const Icon(
+            Icons.account_balance_rounded,
+            color: AppColors.blue,
+          ),
+          title: const Text(
+            'Amtliche HVZ-Prognose – Konstanz/Rhein',
+            style: TextStyle(
+              color: AppColors.deepBlue,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          subtitle: const Padding(
+            padding: EdgeInsets.only(top: 3),
+            child: Text(
+              'Seerhein · nicht identisch mit Konstanz/Bodensee',
+              style: TextStyle(color: Color(0xFF71809A), fontSize: 12),
+            ),
+          ),
+          children: _expanded
+              ? [
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Unveränderte Originalgrafik · Quelle: LUBW / HVZ Baden-Württemberg',
+                      style: TextStyle(
+                        color: Color(0xFF64738D),
+                        fontSize: 12,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  AspectRatio(
+                    aspectRatio: 4 / 3,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF5F8FD),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.network(
+                          _hvzKonstanzRheinForecastGraphicUrl,
+                          key: const ValueKey('hvz-konzstanz-rhein-image'),
+                          fit: BoxFit.contain,
+                          semanticLabel:
+                              'Amtliche HVZ-Prognosegrafik Konstanz Rhein',
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return const Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                  SizedBox(height: 10),
+                                  Text(
+                                    'Amtliche Grafik wird geladen …',
+                                    style: TextStyle(
+                                      color: Color(0xFF64738D),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) =>
+                              const Center(
+                                child: Padding(
+                                  padding: EdgeInsets.all(20),
+                                  child: Text(
+                                    'Amtliche HVZ-Grafik ist derzeit nicht erreichbar. Bitte später erneut versuchen oder die Originalgrafik öffnen.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Color(0xFF64738D),
+                                      fontSize: 13,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const ValueKey('hvz-konzstanz-rhein-open-original'),
+                      onPressed: _openOriginalGraphic,
+                      icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                      label: const Text('Originalgrafik öffnen'),
+                    ),
+                  ),
+                ]
+              : const [],
+        ),
+      ),
+    ),
+  );
 }
 
 class _NextForecastValue extends StatelessWidget {
