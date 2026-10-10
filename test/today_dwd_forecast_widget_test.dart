@@ -469,6 +469,9 @@ void main() {
 
     final chip = find.byKey(const ValueKey('time-window-sup_kajak-Jetzt–12'));
     expect(chip, findsOneWidget);
+    final bestTime = find.byKey(const ValueKey('best-time-sup_kajak'));
+    expect(bestTime, findsOneWidget);
+    expect(tester.widget<Text>(bestTime).data, contains('Beste Zeit:'));
     expect(
       find.descendant(of: chip, matching: find.textContaining(' · ')),
       findsOneWidget,
@@ -485,6 +488,13 @@ void main() {
       ),
       findsOneWidget,
     );
+    await tester.tap(find.text('Schließen'));
+    await tester.pumpAndSettle();
+    final tomorrow = find.byKey(const ValueKey('today-day-1'));
+    await tester.ensureVisible(tomorrow);
+    await tester.tap(tomorrow);
+    await tester.pumpAndSettle();
+    expect(bestTime, findsNothing);
   });
 }
 

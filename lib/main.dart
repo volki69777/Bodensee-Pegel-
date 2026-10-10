@@ -2426,14 +2426,22 @@ class _TodayActivityRow extends StatelessWidget {
     'kiten',
   };
 
+  ActivityTimeWindowRecommendation? get _bestTimeWindow =>
+      ActivityTimeWindowRecommendations.best(timeWindowRatings);
+
+  double get _rowHeight {
+    final baseHeight = _windDependentActivityIds.contains(activity.id)
+        ? (timeWindowRatings.isEmpty ? 78.0 : 144.0)
+        : (timeWindowRatings.isEmpty ? 54.0 : 104.0);
+    return baseHeight + (_bestTimeWindow == null ? 0 : 18);
+  }
+
   @override
   Widget build(BuildContext context) => SizedBox(
     key: ValueKey('today-activity-${activity.id}'),
     // Three upcoming intervals can wrap onto two compact chip rows on narrow
     // phones. Reserve their real height instead of clipping the last row.
-    height: _windDependentActivityIds.contains(activity.id)
-        ? (timeWindowRatings.isEmpty ? 78 : 144)
-        : (timeWindowRatings.isEmpty ? 54 : 104),
+    height: _rowHeight,
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -2509,6 +2517,25 @@ class _TodayActivityRow extends StatelessWidget {
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                   ),
+                ),
+              ),
+            ),
+          ),
+        if (_bestTimeWindow != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 37, top: 1),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Beste Zeit: ${_bestTimeWindow!.window.label} · '
+                '${_bestTimeWindow!.rating.score!.toStringAsFixed(1).replaceAll('.', ',')} Punkte',
+                key: ValueKey('best-time-${activity.id}'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFF526F95),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ),

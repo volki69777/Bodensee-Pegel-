@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'activity_rating_service.dart';
+
 import 'package:timezone/data/latest.dart' as timezone_data;
 import 'package:timezone/timezone.dart' as tz;
 
@@ -108,6 +110,42 @@ class ActivityTimeWindowForecast {
   final String? weatherLabel;
 
   bool get hasForecastPoints => points.isNotEmpty;
+}
+
+/// The best existing time-window result for one activity.
+///
+/// This is selection only: it never recalculates an activity score or turns
+/// unavailable weather data into a rating. Equal scores deliberately keep the
+/// chronologically earlier local window.
+class ActivityTimeWindowRecommendation {
+  const ActivityTimeWindowRecommendation({
+    required this.window,
+    required this.rating,
+  });
+
+  final ActivityTimeWindow window;
+  final ActivityRating rating;
+}
+
+abstract final class ActivityTimeWindowRecommendations {
+  static ActivityTimeWindowRecommendation? best(
+    Map<ActivityTimeWindow, ActivityRating> ratings,
+  ) {
+    final candidates = ratings.entries
+        .where((entry) => entry.value.score != null)
+        .toList(growable: false);
+    if (candidates.isEmpty) return null;
+    candidates.sort((left, right) {
+      final scoreOrder = right.value.score!.compareTo(left.value.score!);
+      if (scoreOrder != 0) return scoreOrder;
+      return left.key.startUtc.compareTo(right.key.startUtc);
+    });
+    final best = candidates.first;
+    return ActivityTimeWindowRecommendation(
+      window: best.key,
+      rating: best.value,
+    );
+  }
 }
 
 /// Creates the upcoming local intervals and aggregates existing hourly data.

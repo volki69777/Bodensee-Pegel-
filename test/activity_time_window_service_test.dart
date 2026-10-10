@@ -1,3 +1,4 @@
+import 'package:bodensee_pegel/activity_rating_service.dart';
 import 'package:bodensee_pegel/activity_time_window_service.dart';
 import 'package:bodensee_pegel/dwd_forecast_service.dart';
 import 'package:bodensee_pegel/geosphere_forecast_service.dart';
@@ -213,6 +214,82 @@ void main() {
       },
     );
   });
+
+  group('ActivityTimeWindowRecommendations.best', () {
+    test('selects the unique highest existing score', () {
+      final morning = _window('Vormittag 06–12', 6, 12);
+      final afternoon = _window('Nachmittag 12–18', 12, 18);
+      final result = ActivityTimeWindowRecommendations.best({
+        morning: _rating(ActivityRatingLevel.good, 7.2),
+        afternoon: _rating(ActivityRatingLevel.veryGood, 8.6),
+      });
+
+      expect(result?.window, afternoon);
+      expect(result?.rating.score, 8.6);
+    });
+
+    test('keeps the earlier window when scores are equal', () {
+      final morning = _window('Vormittag 06–12', 6, 12);
+      final afternoon = _window('Nachmittag 12–18', 12, 18);
+      final result = ActivityTimeWindowRecommendations.best({
+        afternoon: _rating(ActivityRatingLevel.good, 7.4),
+        morning: _rating(ActivityRatingLevel.good, 7.4),
+      });
+
+      expect(result?.window, morning);
+    });
+
+    test('does not recommend unavailable or absent time windows', () {
+      final morning = _window('Vormittag 06–12', 6, 12);
+      expect(
+        ActivityTimeWindowRecommendations.best({
+          morning: const ActivityRating(
+            ActivityRatingLevel.unavailable,
+            'Nicht genügend Wetterdaten verfügbar',
+          ),
+        }),
+        isNull,
+      );
+      expect(ActivityTimeWindowRecommendations.best(const {}), isNull);
+    });
+
+    test(
+      'uses the existing motorboat profile ratings without recalculation',
+      () {
+        final current = _window('Jetzt–12', 10, 12);
+        final afternoon = _window('Nachmittag 12–18', 12, 18);
+        ActivityRating rating(MotorboatRatingProfile profile, double wind) =>
+            ActivityRatingService.rate(
+              activityId: 'motorboot',
+              data: ActivityForecastData(
+                windKilometersPerHour: wind,
+                gustKilometersPerHour: wind + 8,
+                precipitationMillimeters: 0,
+                motorboatProfile: profile,
+              ),
+            );
+        final smallRatings = {
+          current: rating(MotorboatRatingProfile.smallOpen, 20),
+          afternoon: rating(MotorboatRatingProfile.smallOpen, 10),
+        };
+        final yachtRatings = {
+          current: rating(MotorboatRatingProfile.yacht, 20),
+          afternoon: rating(MotorboatRatingProfile.yacht, 10),
+        };
+        final small = ActivityTimeWindowRecommendations.best(smallRatings);
+        final yacht = ActivityTimeWindowRecommendations.best(yachtRatings);
+
+        double maximumScore(Map<ActivityTimeWindow, ActivityRating> ratings) =>
+            ratings.values
+                .map((rating) => rating.score)
+                .whereType<double>()
+                .reduce((left, right) => left > right ? left : right);
+
+        expect(small?.rating.score, maximumScore(smallRatings));
+        expect(yacht?.rating.score, maximumScore(yachtRatings));
+      },
+    );
+  });
 }
 
 List<String> _labelsAt(
@@ -254,3 +331,14 @@ ActivityTimeWindowPoint _point(
   gustKilometersPerHour: gust,
   windDirectionDegrees: direction,
 );
+
+ActivityTimeWindow _window(String label, int startHour, int endHour) =>
+    ActivityTimeWindow(
+      label: label,
+      startUtc: _berlinUtc(2026, 9, 14, startHour),
+      endUtc: _berlinUtc(2026, 9, 14, endHour),
+      isCurrent: false,
+    );
+
+ActivityRating _rating(ActivityRatingLevel level, double score) =>
+    ActivityRating(level, 'Fixture', score: score);
