@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -7,6 +8,9 @@ import 'package:bodensee_pegel/dwd_forecast_service.dart';
 import 'package:bodensee_pegel/environment_service.dart';
 import 'package:bodensee_pegel/geosphere_forecast_service.dart';
 import 'package:bodensee_pegel/main.dart';
+import 'package:bodensee_pegel/activity_rating_service.dart';
+import 'package:bodensee_pegel/activity_recommendation_service.dart';
+import 'package:bodensee_pegel/activities_boats_service.dart';
 import 'package:bodensee_pegel/meteoswiss_forecast_service.dart';
 import 'package:bodensee_pegel/official_warning_service.dart';
 import 'package:bodensee_pegel/pegelonline_service.dart';
@@ -456,7 +460,13 @@ void main() {
       await tester.tap(wholeScore.first);
       await tester.pumpAndSettle();
       expect(find.text('Aktivitätsbewertung'), findsOneWidget);
-      expect(find.textContaining('von 10 ·'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.textContaining('von 10 ·'),
+        ),
+        findsOneWidget,
+      );
       await tester.tap(find.text('Schließen'));
       await tester.pumpAndSettle();
     },
@@ -502,7 +512,13 @@ void main() {
     await tester.tap(chip);
     await tester.pumpAndSettle();
     expect(find.text('Jetzt–12'), findsOneWidget);
-    expect(find.textContaining('von 10 ·'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.textContaining('von 10 ·'),
+      ),
+      findsOneWidget,
+    );
     expect(
       find.descendant(
         of: find.byType(AlertDialog),
@@ -708,6 +724,259 @@ void main() {
       });
     }
   }
+  for (final width in [375.0, 390.0, 430.0]) {
+    for (final scale in [1.0, 1.5]) {
+      testWidgets('7-day recommendations at $width px and text scale $scale', (
+        tester,
+      ) async {
+        await tester.binding.setSurfaceSize(Size(width, 900));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        // A winner outside the saved selection must still be reachable without
+        // changing that preference on disk.
+        await ActivitiesBoatsService().saveActivities(['angeln']);
+        final now = DateTime.now().toUtc();
+        final kml = _recommendationKml(now);
+        final service = DwdForecastService(
+          client: MockClient((_) async => http.Response.bytes(_kmz(kml), 200)),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(scale)),
+              child: child!,
+            ),
+            home: TodayPage(dwdForecastService: service),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          ActivityRecommendationService.activityOrder,
+          plannerActivities.map((a) => a.id),
+        );
+        for (var i = 0; i < 7; i++) {
+          final row = find.byKey(ValueKey('recommendation-day-$i'));
+          expect(row, findsOneWidget);
+          expect(tester.getSize(row).height, greaterThanOrEqualTo(48));
+          for (final element
+              in find
+                  .descendant(of: row, matching: find.byType(RichText))
+                  .evaluate()) {
+            final paragraph = element.renderObject! as RenderParagraph;
+            expect(paragraph.didExceedMaxLines, isFalse);
+            final bounds = tester.getRect(row).inflate(1);
+            final position = paragraph.localToGlobal(Offset.zero);
+            expect(
+              bounds.contains(
+                position + Offset(paragraph.size.width, paragraph.size.height),
+              ),
+              isTrue,
+            );
+          }
+        }
+        final tomorrow = find.byKey(const ValueKey('recommendation-day-1'));
+        expect(
+          find.descendant(of: tomorrow, matching: find.text('SUP / Kajak')),
+          findsOneWidget,
+        );
+        final parsed = DwdMosmixParser.parseKml(kml);
+        final day = DwdMosmixAggregation.aggregate(parsed).firstWhere(
+          (d) =>
+              d.localDate.day ==
+              DateTime.now().add(const Duration(days: 1)).day,
+        );
+        final original = ActivityRatingService.rate(
+          activityId: 'sup_kajak',
+          data: ActivityForecastData(
+            temperatureMinimumCelsius: day.temperatureMinimumCelsius,
+            temperatureMaximumCelsius: day.temperatureMaximumCelsius,
+            windKilometersPerHour: day.representativeWindKilometersPerHour,
+            gustKilometersPerHour: day.maximumGustKilometersPerHour,
+            precipitationMillimeters: day.precipitationMillimeters,
+          ),
+        );
+        expect(
+          find.descendant(
+            of: tomorrow,
+            matching: find.text(
+              '${original.score!.toStringAsFixed(1).replaceAll('.', ',')} von 10 · ${original.label}',
+            ),
+          ),
+          findsOneWidget,
+        );
+        await tester.ensureVisible(tomorrow);
+        await tester.tap(tomorrow);
+        await tester.pumpAndSettle();
+        final dialog = find.byKey(const ValueKey('recommendation-details'));
+        expect(dialog, findsOneWidget);
+        expect(
+          find.descendant(
+            of: dialog,
+            matching: find.textContaining(original.reason),
+          ),
+          findsOneWidget,
+        );
+        expect(tester.widget<AlertDialog>(dialog).scrollable, isTrue);
+        await tester.tap(find.text('Schließen'));
+        await tester.pumpAndSettle();
+        final selectedDay = tester.widget<ChoiceChip>(
+          find.descendant(
+            of: find.byKey(const ValueKey('today-day-1')),
+            matching: find.byType(ChoiceChip),
+          ),
+        );
+        expect(selectedDay.selected, isTrue);
+        final activity = find.byKey(const ValueKey('today-activity-sup_kajak'));
+        expect(activity, findsOneWidget);
+        expect(
+          (tester.widget<Container>(activity).decoration! as BoxDecoration)
+              .border,
+          isNotNull,
+        );
+        expect(
+          (await ActivitiesBoatsService().load(
+            validActivities: ActivityRecommendationService.activityOrder,
+          )).selectedActivities,
+          ['angeln'],
+        );
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+  for (final profile in MotorboatRatingProfile.values) {
+    testWidgets('recommendations use saved motorboat profile ${profile.name}', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(375, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await ActivitiesBoatsService().saveMotorboatRatingProfile(profile);
+      final service = DwdForecastService(
+        client: MockClient(
+          (_) async => http.Response.bytes(
+            _kmz(
+              _recommendationKml(DateTime.now().toUtc(), profileWeather: true),
+            ),
+            200,
+          ),
+        ),
+      );
+      await tester.pumpWidget(
+        _scopedToday(station: StationSelectionService(), service: service),
+      );
+      await tester.pumpAndSettle();
+      final row = find.byKey(const ValueKey('recommendation-day-1'));
+      final expectedLabel = profile == MotorboatRatingProfile.smallOpen
+          ? 'Angeln'
+          : profile.activityLabel;
+      expect(
+        find.descendant(of: row, matching: find.text(expectedLabel)),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: row, matching: find.text('10,0 von 10 · Sehr gut')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+  testWidgets(
+    'station switch discards old recommendations while new provider is pending',
+    (tester) async {
+      final selection = StationSelectionService();
+      final pending = Completer<http.Response>();
+      await tester.pumpWidget(
+        _scopedToday(
+          station: selection,
+          service: DwdForecastService(
+            client: MockClient(
+              (_) async => http.Response.bytes(
+                _kmz(_recommendationKml(DateTime.now().toUtc())),
+                200,
+              ),
+            ),
+          ),
+          meteoSwissService: MeteoSwissForecastService(
+            client: MockClient((_) => pending.future),
+          ),
+          bafuForecastLoader: () async => const BafuForecastData(points: []),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Keine Empfehlung verfügbar'), findsNothing);
+      final tip = find.byKey(const ValueKey('recommendation-day-1'));
+      await tester.ensureVisible(tip);
+      await tester.tap(tip);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Schließen'));
+      await tester.pumpAndSettle();
+      selection.select(BafuHydroService.romanshorn, persistLast: false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(find.text('Keine Empfehlung verfügbar'), findsNWidgets(7));
+      expect(
+        tester
+            .widget<Container>(
+              find.byKey(const ValueKey('today-activity-sup_kajak')),
+            )
+            .decoration,
+        isNull,
+      );
+      pending.complete(http.Response('{}', 200));
+      await tester.pumpAndSettle();
+      expect(find.text('Keine Empfehlung verfügbar'), findsNWidgets(7));
+      final row = find.byKey(const ValueKey('recommendation-day-0'));
+      expect(tester.widget<InkWell>(row).onTap, isNull);
+      selection.select(PegelOnlineService.konstanz, persistLast: false);
+      await tester.pumpAndSettle();
+      expect(find.text('Keine Empfehlung verfügbar'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'same-provider station switch does not reuse the preceding station forecast',
+    (tester) async {
+      final selection = StationSelectionService()
+        ..select(BafuHydroService.romanshorn, persistLast: false);
+      final pending = Completer<http.Response>();
+      await tester.pumpWidget(
+        StationSelectionScope(
+          notifier: selection,
+          child: MaterialApp(
+            home: TodayPage(
+              meteoSwissForecastService: MeteoSwissForecastService(
+                client: MockClient(
+                  (_) async => http.Response(
+                    jsonEncode(
+                      _meteoswissForecastPayload(DateTime.now().toUtc()),
+                    ),
+                    200,
+                  ),
+                ),
+              ),
+              berlingenMeteoSwissForecastService: MeteoSwissForecastService(
+                client: MockClient((_) => pending.future),
+              ),
+              bafuForecastLoader: () async =>
+                  const BafuForecastData(points: []),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Keine Empfehlung verfügbar').evaluate().length,
+        lessThan(7),
+      );
+      selection.select(BafuHydroService.berlingen, persistLast: false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(find.text('Keine Empfehlung verfügbar'), findsNWidgets(7));
+      pending.complete(http.Response('{}', 200));
+      await tester.pumpAndSettle();
+      expect(find.text('Keine Empfehlung verfügbar'), findsNWidgets(7));
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 Widget _scopedToday({
@@ -965,4 +1234,32 @@ Uint8List _kmz(String kml) {
       ArchiveFile('MOSMIX_L_2026091215_10929.kml', bytes.length, bytes),
     );
   return Uint8List.fromList(ZipEncoder().encode(archive));
+}
+
+String _recommendationKml(DateTime now, {bool profileWeather = false}) {
+  timezone_data.initializeTimeZones();
+  final berlin = tz.getLocation('Europe/Berlin');
+  final local = tz.TZDateTime.from(now, berlin);
+  final timestamps = List.generate(
+    7,
+    (i) => i == 0
+        ? now.add(const Duration(seconds: 30))
+        : tz.TZDateTime(
+            berlin,
+            local.year,
+            local.month,
+            local.day + i,
+            12,
+          ).toUtc(),
+  );
+  String values(num value) => List.filled(7, value).join(' ');
+  return '''<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:dwd="https://opendata.dwd.de/weather/lib/pointforecast_dwd_extension_V1_0.xsd">
+<dwd:ProductDefinition><dwd:ForecastTimeSteps>${timestamps.map((t) => '<dwd:TimeStep>${t.toIso8601String()}</dwd:TimeStep>').join()}</dwd:ForecastTimeSteps></dwd:ProductDefinition>
+<Document><Placemark><name>10929</name><description>KONSTANZ</description><Point><coordinates>9.18,47.68,443</coordinates></Point>
+<dwd:Forecast dwd:elementName="TTT"><dwd:value>${values(profileWeather ? 283.15 : 295.15)}</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="FF"><dwd:value>${values(profileWeather ? 2.5 : 2)}</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="FX1"><dwd:value>${values(profileWeather ? 7 : 4)}</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="RR1c"><dwd:value>${values(0)}</dwd:value></dwd:Forecast>
+</Placemark></Document></kml>''';
 }

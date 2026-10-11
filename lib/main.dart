@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'analysis_service.dart';
 import 'activity_rating_service.dart';
+import 'activity_recommendation_service.dart';
 import 'activity_time_window_service.dart';
 import 'activities_boats_service.dart';
 import 'bafu_hydro_service.dart';
@@ -879,6 +880,10 @@ class _TodayPageState extends State<TodayPage> {
   List<String> _selectedActivityIds = const [];
   bool _activitiesLoaded = false;
   MotorboatRatingProfile? _motorboatRatingProfile;
+  String? _recommendedActivityId;
+  final _activityRowKeys = <String, GlobalKey>{
+    for (final activity in plannerActivities) activity.id: GlobalKey(),
+  };
 
   @override
   void initState() {
@@ -929,6 +934,7 @@ class _TodayPageState extends State<TodayPage> {
     final selectedStation = selection?.currentStation;
     if (selectedStation != null && selectedStation.uuid != _station.uuid) {
       _station = selectedStation;
+      _recommendedActivityId = null;
       _loadForecastForStation();
     }
   }
@@ -936,7 +942,10 @@ class _TodayPageState extends State<TodayPage> {
   void _syncStation() {
     final station = _stationSelection?.currentStation;
     if (station != null && mounted && station.uuid != _station.uuid) {
-      setState(() => _station = station);
+      setState(() {
+        _station = station;
+        _recommendedActivityId = null;
+      });
       _loadForecastForStation();
     }
   }
@@ -1069,7 +1078,10 @@ class _TodayPageState extends State<TodayPage> {
     if (station != null && mounted) {
       _stationSelection?.select(station);
       if (_stationSelection == null) {
-        setState(() => _station = station);
+        setState(() {
+          _station = station;
+          _recommendedActivityId = null;
+        });
         _loadForecastForStation();
       }
     }
@@ -1086,13 +1098,17 @@ class _TodayPageState extends State<TodayPage> {
     final start = _dayOnly(DateTime.now());
     final days = List<DateTime>.generate(
       7,
-      (index) => start.add(Duration(days: index)),
+      (index) => DateTime(start.year, start.month, start.day + index),
     );
     final selectedActivities =
         !_activitiesLoaded || _selectedActivityIds.isEmpty
         ? plannerActivities
         : plannerActivities
-              .where((activity) => _selectedActivityIds.contains(activity.id))
+              .where(
+                (activity) =>
+                    _selectedActivityIds.contains(activity.id) ||
+                    activity.id == _recommendedActivityId,
+              )
               .toList(growable: false);
     final visibleActivities = selectedActivities
         .map(
@@ -1141,7 +1157,10 @@ class _TodayPageState extends State<TodayPage> {
                   _DayPicker(
                     days: days,
                     selectedDay: _selectedDate,
-                    onSelected: (day) => setState(() => _selectedDate = day),
+                    onSelected: (day) => setState(() {
+                      _selectedDate = day;
+                      _recommendedActivityId = null;
+                    }),
                   ),
                   const SizedBox(height: 18),
                   _buildTodayOverview(),
@@ -1298,6 +1317,51 @@ class _TodayPageState extends State<TodayPage> {
     );
   }
 
+  void _selectRecommendation(
+    DateTime day,
+    DailyActivityRecommendation recommendation,
+  ) {
+    setState(() {
+      _selectedDate = day;
+      _recommendedActivityId = recommendation.activityId;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final rowContext =
+          _activityRowKeys[recommendation.activityId]?.currentContext;
+      if (rowContext != null) {
+        Scrollable.ensureVisible(
+          rowContext,
+          alignment: .1,
+          duration: const Duration(milliseconds: 250),
+        );
+      }
+    });
+    final activity = plannerActivities.firstWhere(
+      (a) => a.id == recommendation.activityId,
+    );
+    final label = activity.id == 'motorboot' && _motorboatRatingProfile != null
+        ? _motorboatRatingProfile!.activityLabel
+        : activity.label;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const ValueKey('recommendation-details'),
+        title: Text('$label · ${_longDayLabel(day)}'),
+        scrollable: true,
+        content: Text(
+          '${_scoreDetail(recommendation.rating)}\n${recommendation.rating.reason}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Schließen'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildActivityPlanner(
     List<DateTime> days,
     List<_PlannerActivity> activities,
@@ -1325,6 +1389,7 @@ class _TodayPageState extends State<TodayPage> {
     if (_station.uuid == BafuHydroService.romanshorn.uuid ||
         _station.uuid == BafuHydroService.berlingen.uuid) {
       return FutureBuilder<MeteoSwissForecast>(
+        key: ValueKey(_station.uuid),
         future: _station.uuid == BafuHydroService.romanshorn.uuid
             ? _meteoSwissForecast
             : _berlingenMeteoSwissForecast,
@@ -1387,7 +1452,7 @@ class _TodayPageState extends State<TodayPage> {
     final ratingsByDay = <DateTime, Map<String, ActivityRating>>{
       for (final day in days)
         day: {
-          for (final activity in activities)
+          for (final activity in plannerActivities)
             activity.id: ActivityRatingService.rate(
               activityId: activity.id,
               data: _activityForecastData(
@@ -1461,7 +1526,18 @@ class _TodayPageState extends State<TodayPage> {
           _MotorboatOfficialWarningNotice(warnings: motorboatWarnings),
           const SizedBox(height: 14),
         ],
+        _ActivityRecommendationsSection(
+          days: days,
+          ratingsByDay: _activitiesLoaded ? ratingsByDay : const {},
+          motorboatProfile: _motorboatRatingProfile,
+          selectedDay: _selectedDate,
+          selectedActivityId: _recommendedActivityId,
+          onSelected: _selectRecommendation,
+        ),
+        const SizedBox(height: 20),
         _TodayActivitiesSection(
+          highlightedActivityId: _recommendedActivityId,
+          activityRowKeys: _activityRowKeys,
           activities: activities,
           ratings: ratingsByDay[_selectedDate] ?? const {},
           timeWindowRatings: timeWindowRatings,
@@ -2357,6 +2433,8 @@ const plannerActivities = <_PlannerActivity>[
 class _TodayActivitiesSection extends StatelessWidget {
   const _TodayActivitiesSection({
     required this.activities,
+    this.highlightedActivityId,
+    this.activityRowKeys = const {},
     required this.ratings,
     required this.timeWindowRatings,
     this.timeWindowAvailabilityNotice,
@@ -2364,6 +2442,8 @@ class _TodayActivitiesSection extends StatelessWidget {
   });
 
   final List<_PlannerActivity> activities;
+  final String? highlightedActivityId;
+  final Map<String, GlobalKey> activityRowKeys;
   final Map<String, ActivityRating> ratings;
   final Map<ActivityTimeWindow, Map<String, ActivityRating>> timeWindowRatings;
   final String? timeWindowAvailabilityNotice;
@@ -2393,24 +2473,28 @@ class _TodayActivitiesSection extends StatelessWidget {
             ),
           ],
           for (var index = 0; index < activities.length; index++) ...[
-            _TodayActivityRow(
-              activity: activities[index],
-              rating:
-                  ratings[activities[index].id] ??
-                  const ActivityRating(
-                    ActivityRatingLevel.unavailable,
-                    'Nicht genügend Wetterdaten verfügbar',
-                  ),
-              timeWindowRatings: {
-                for (final entry in timeWindowRatings.entries)
-                  entry.key:
-                      entry.value[activities[index].id] ??
-                      const ActivityRating(
-                        ActivityRatingLevel.unavailable,
-                        'Nicht genügend Wetterdaten verfügbar',
-                      ),
-              },
-              onViewWindTrend: onViewWindTrend,
+            KeyedSubtree(
+              key: activityRowKeys[activities[index].id],
+              child: _TodayActivityRow(
+                isHighlighted: highlightedActivityId == activities[index].id,
+                activity: activities[index],
+                rating:
+                    ratings[activities[index].id] ??
+                    const ActivityRating(
+                      ActivityRatingLevel.unavailable,
+                      'Nicht genügend Wetterdaten verfügbar',
+                    ),
+                timeWindowRatings: {
+                  for (final entry in timeWindowRatings.entries)
+                    entry.key:
+                        entry.value[activities[index].id] ??
+                        const ActivityRating(
+                          ActivityRatingLevel.unavailable,
+                          'Nicht genügend Wetterdaten verfügbar',
+                        ),
+                },
+                onViewWindTrend: onViewWindTrend,
+              ),
             ),
             if (index < activities.length - 1)
               const Divider(height: 1, color: Color(0xFFEAF0F7)),
@@ -2474,12 +2558,14 @@ class _MotorboatOfficialWarningNotice extends StatelessWidget {
 class _TodayActivityRow extends StatelessWidget {
   const _TodayActivityRow({
     required this.activity,
+    this.isHighlighted = false,
     required this.rating,
     required this.timeWindowRatings,
     required this.onViewWindTrend,
   });
 
   final _PlannerActivity activity;
+  final bool isHighlighted;
   final ActivityRating rating;
   final Map<ActivityTimeWindow, ActivityRating> timeWindowRatings;
   final VoidCallback onViewWindTrend;
@@ -2495,9 +2581,19 @@ class _TodayActivityRow extends StatelessWidget {
       ActivityTimeWindowRecommendations.best(timeWindowRatings);
 
   @override
-  Widget build(BuildContext context) => Padding(
+  Widget build(BuildContext context) => Container(
     key: ValueKey('today-activity-${activity.id}'),
-    padding: const EdgeInsets.symmetric(vertical: 14),
+    padding: EdgeInsets.symmetric(
+      vertical: 14,
+      horizontal: isHighlighted ? 10 : 0,
+    ),
+    decoration: isHighlighted
+        ? BoxDecoration(
+            color: const Color(0xFFEAF2FF),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.deepBlue, width: 2),
+          )
+        : null,
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2653,6 +2749,144 @@ class _TimeWindowRatingChip extends StatelessWidget {
       ),
     ),
   );
+}
+
+class _ActivityRecommendationsSection extends StatelessWidget {
+  const _ActivityRecommendationsSection({
+    required this.days,
+    required this.ratingsByDay,
+    required this.selectedDay,
+    required this.selectedActivityId,
+    required this.motorboatProfile,
+    required this.onSelected,
+  });
+  final List<DateTime> days;
+  final Map<DateTime, Map<String, ActivityRating>> ratingsByDay;
+  final DateTime selectedDay;
+  final String? selectedActivityId;
+  final MotorboatRatingProfile? motorboatProfile;
+  final void Function(DateTime, DailyActivityRecommendation) onSelected;
+
+  @override
+  Widget build(BuildContext context) => _MoreSection(
+    title: 'DEINE 7-TAGE-EMPFEHLUNG',
+    titleColor: AppColors.navy,
+    titleBackgroundColor: Colors.white,
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Höchster verfügbarer Tages-Score aus allen sechs Aktivitäten. '
+            'Bei Gleichstand: SUP / Kajak, Segeln, Motorboot, Kiten, Angeln, Baden / Schwimmen.',
+            style: TextStyle(
+              color: Color(0xFF465A76),
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 8),
+          for (var index = 0; index < days.length; index++)
+            _day(context, days[index], index),
+        ],
+      ),
+    ),
+  );
+
+  Widget _day(BuildContext context, DateTime day, int index) {
+    final recommendation = ActivityRecommendationService.best(
+      ratingsByDay[day] ?? const {},
+    );
+    final isToday = day == _dayOnly(DateTime.now());
+    final selected =
+        day == selectedDay &&
+        recommendation != null &&
+        recommendation.activityId == selectedActivityId;
+    final activity = recommendation == null
+        ? null
+        : plannerActivities.firstWhere(
+            (activity) => activity.id == recommendation.activityId,
+          );
+    final label = activity?.id == 'motorboot' && motorboatProfile != null
+        ? motorboatProfile!.activityLabel
+        : activity?.label;
+    final date = Text(
+      '${isToday ? 'HEUTE · ' : ''}${_weekdayShort[day.weekday - 1]}\n'
+      '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}.',
+      style: TextStyle(
+        color: AppColors.navy,
+        fontSize: 12,
+        fontWeight: isToday ? FontWeight.w900 : FontWeight.w700,
+        height: 1.4,
+      ),
+    );
+    final details = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label ?? 'Keine Empfehlung verfügbar',
+          style: const TextStyle(
+            color: AppColors.navy,
+            fontSize: 14,
+            fontWeight: FontWeight.w800,
+            height: 1.3,
+          ),
+        ),
+        if (recommendation != null) ...[
+          const SizedBox(height: 3),
+          Text(
+            _scoreDetail(recommendation.rating),
+            style: TextStyle(
+              color: _ratingColor(recommendation.rating.level),
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Material(
+        color: isToday ? const Color(0xFFEAF2FF) : const Color(0xFFF5F9FF),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: selected || isToday
+                ? AppColors.deepBlue
+                : Colors.transparent,
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: InkWell(
+          key: ValueKey('recommendation-day-$index'),
+          borderRadius: BorderRadius.circular(12),
+          onTap: recommendation == null
+              ? null
+              : () => onSelected(day, recommendation),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 64),
+            padding: const EdgeInsets.all(10),
+            child: MediaQuery.textScalerOf(context).scale(1) > 1.2
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [date, const SizedBox(height: 6), details],
+                  )
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(width: 85, child: date),
+                      const SizedBox(width: 8),
+                      Expanded(child: details),
+                    ],
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _WeeklyPlannerSection extends StatelessWidget {
