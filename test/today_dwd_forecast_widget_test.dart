@@ -13,6 +13,7 @@ import 'package:bodensee_pegel/pegelonline_service.dart';
 import 'package:bodensee_pegel/station_selection_service.dart';
 import 'package:bodensee_pegel/vorarlberg_hydro_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -237,7 +238,16 @@ void main() {
     expect(find.textContaining('266 cm'), findsOneWidget);
     expect(find.textContaining('Prognose · 12:00'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('today-day-6')));
+    final lastDay = find.byKey(const ValueKey('today-day-6'));
+    await tester.scrollUntilVisible(
+      lastDay,
+      160,
+      scrollable: find.descendant(
+        of: find.byKey(const ValueKey('today-day-picker')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(lastDay);
     await tester.pumpAndSettle();
     expect(find.text('Nicht verfügbar'), findsWidgets);
   });
@@ -279,7 +289,16 @@ void main() {
     await _selectFixtureForecastDay(tester, now, offset: 1);
     expect(find.text('20–20 °C'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('today-day-6')));
+    final lastDay = find.byKey(const ValueKey('today-day-6'));
+    await tester.scrollUntilVisible(
+      lastDay,
+      160,
+      scrollable: find.descendant(
+        of: find.byKey(const ValueKey('today-day-picker')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(lastDay);
     await tester.pumpAndSettle();
     expect(find.text('Nicht verfügbar'), findsWidgets);
   });
@@ -414,7 +433,10 @@ void main() {
       await _selectFixtureForecastDay(tester, DateTime.now().toUtc());
 
       expect(find.text('Noch keine Bewertung'), findsNothing);
-      expect(find.text('Freizeit-Eignung aus Tagesprognosen'), findsOneWidget);
+      expect(
+        find.text('Tagesprognosen · Für weitere Tage seitlich wischen'),
+        findsOneWidget,
+      );
       expect(find.textContaining('· Sehr gut'), findsWidgets);
       expect(
         find.byKey(const ValueKey('today-activity-sup_kajak')),
@@ -578,6 +600,114 @@ void main() {
       findsOneWidget,
     );
   });
+  for (final width in [375.0, 390.0, 430.0]) {
+    for (final scale in [1.0, 1.3]) {
+      testWidgets('Smartphone V2 at $width px, text scale $scale', (
+        tester,
+      ) async {
+        await tester.binding.setSurfaceSize(Size(width, 900));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final now = DateTime.now().toUtc();
+        final service = DwdForecastService(
+          client: MockClient(
+            (_) async =>
+                http.Response.bytes(_kmz(_futureTimeWindowKml(now)), 200),
+          ),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(scale)),
+              child: child!,
+            ),
+            home: TodayPage(
+              dwdForecastService: service,
+              nowProvider: () => now,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('today-day-1')));
+        await tester.pumpAndSettle();
+        final todayChip = tester.widget<ChoiceChip>(
+          find.descendant(
+            of: find.byKey(const ValueKey('today-day-0')),
+            matching: find.byType(ChoiceChip),
+          ),
+        );
+        expect(todayChip.selected, isFalse);
+        expect(todayChip.side!.width, 2);
+        final todayText = find.descendant(
+          of: find.byKey(const ValueKey('today-day-0')),
+          matching: find.text('HEUTE'),
+        );
+        expect(
+          tester.renderObject<RenderParagraph>(todayText).didExceedMaxLines,
+          isFalse,
+        );
+        for (final activity in plannerActivities) {
+          final row = find.byKey(ValueKey('today-activity-${activity.id}'));
+          final title = find.descendant(
+            of: row,
+            matching: find.text(activity.label),
+          );
+          expect(title, findsOneWidget);
+          expect(
+            tester.renderObject<RenderParagraph>(title).didExceedMaxLines,
+            isFalse,
+          );
+          final reason = find.byKey(ValueKey('activity-reason-${activity.id}'));
+          expect(
+            tester.renderObject<RenderParagraph>(reason).didExceedMaxLines,
+            isFalse,
+          );
+          expect(
+            tester
+                .getRect(row)
+                .inflate(0.5)
+                .contains(tester.getRect(reason).bottomRight),
+            isTrue,
+          );
+        }
+        final chip = find.byKey(
+          const ValueKey('time-window-sup_kajak-Morgen 06–12'),
+        );
+        await tester.ensureVisible(chip);
+        await tester.pumpAndSettle();
+        expect(tester.getSize(chip).height, greaterThanOrEqualTo(48));
+        expect(tester.getSize(chip).width, greaterThanOrEqualTo(48));
+        await tester.tap(chip);
+        await tester.pumpAndSettle();
+        expect(find.byType(AlertDialog), findsOneWidget);
+        expect(
+          tester.widget<AlertDialog>(find.byType(AlertDialog)).scrollable,
+          isTrue,
+        );
+        await tester.tap(find.text('Schließen'));
+        await tester.pumpAndSettle();
+        final table = find.byKey(const ValueKey('weekly-planner-table'));
+        await tester.ensureVisible(table);
+        await tester.pumpAndSettle();
+        final scroll = find
+            .ancestor(of: table, matching: find.byType(SingleChildScrollView))
+            .first;
+        final lastCell = find
+            .descendant(of: table, matching: find.byType(InkWell))
+            .last;
+        await tester.ensureVisible(lastCell);
+        await tester.pumpAndSettle();
+        expect(
+          tester.getRect(lastCell).right,
+          lessThanOrEqualTo(tester.getRect(scroll).right + 1),
+        );
+        await tester.tap(lastCell);
+        await tester.pumpAndSettle();
+        expect(find.text('Aktivitätsbewertung'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
 }
 
 Widget _scopedToday({

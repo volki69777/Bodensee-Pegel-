@@ -1570,34 +1570,32 @@ class _DayPicker extends StatelessWidget {
         ),
       );
 
-      // On normal phone widths all seven dates remain visible. On unusually
-      // narrow layouts the same chips retain their comfortable tap target in a
-      // horizontal scroller instead of shrinking their labels excessively.
-      if (constraints.maxWidth >= 330) {
-        return SizedBox(
-          key: const ValueKey('today-day-picker'),
-          height: 38,
-          child: Row(
-            children: [
-              for (var index = 0; index < chips.length; index++) ...[
-                Expanded(flex: index == 0 ? 13 : 10, child: chips[index]),
-                if (index < chips.length - 1) const SizedBox(width: 3),
-              ],
-            ],
-          ),
-        );
-      }
-
+      final scale = MediaQuery.textScalerOf(context).scale(1);
+      final todayWidth = 72.0 * scale;
+      final dayWidth = 60.0 * scale;
+      final totalWidth = todayWidth + (days.length - 1) * (dayWidth + 4);
       return SizedBox(
-        height: 38,
-        child: ListView.separated(
-          key: const ValueKey('today-day-picker'),
-          scrollDirection: Axis.horizontal,
-          itemCount: chips.length,
-          separatorBuilder: (_, _) => const SizedBox(width: 4),
-          itemBuilder: (_, index) =>
-              SizedBox(width: index == 0 ? 62 : 53, child: chips[index]),
-        ),
+        height: math.max(48, 48 * scale),
+        child: constraints.maxWidth >= totalWidth
+            ? Row(
+                key: const ValueKey('today-day-picker'),
+                children: [
+                  for (var index = 0; index < chips.length; index++) ...[
+                    Expanded(child: chips[index]),
+                    if (index < chips.length - 1) const SizedBox(width: 4),
+                  ],
+                ],
+              )
+            : ListView.separated(
+                key: const ValueKey('today-day-picker'),
+                scrollDirection: Axis.horizontal,
+                itemCount: chips.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 4),
+                itemBuilder: (_, index) => SizedBox(
+                  width: index == 0 ? todayWidth : dayWidth,
+                  child: chips[index],
+                ),
+              ),
       );
     },
   );
@@ -1617,21 +1615,25 @@ class _DayChoiceChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ChoiceChip(
-    label: Center(child: Text(label, maxLines: 1, overflow: TextOverflow.clip)),
+    label: Center(child: Text(label)),
+    showCheckmark: false,
     selected: selected,
     onSelected: (_) => onSelected(),
-    selectedColor: AppColors.blue,
-    backgroundColor: Colors.white,
-    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-    visualDensity: VisualDensity.compact,
-    padding: const EdgeInsets.symmetric(horizontal: 3),
+    selectedColor: AppColors.deepBlue,
+    backgroundColor: label == 'HEUTE' ? const Color(0xFFDCEBFF) : Colors.white,
+    materialTapTargetSize: MaterialTapTargetSize.padded,
+    padding: const EdgeInsets.symmetric(horizontal: 4),
+    labelPadding: const EdgeInsets.symmetric(horizontal: 2),
     labelStyle: TextStyle(
       color: selected ? Colors.white : AppColors.navy,
       fontWeight: FontWeight.w800,
-      fontSize: 10,
+      fontSize: 12,
     ),
     side: BorderSide(
-      color: selected ? AppColors.blue : const Color(0xFFE1EAF5),
+      color: selected || label == 'HEUTE'
+          ? AppColors.deepBlue
+          : const Color(0xFFE1EAF5),
+      width: label == 'HEUTE' ? 2 : 1,
     ),
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
   );
@@ -1744,8 +1746,13 @@ class _ForecastOverviewWithSource extends StatelessWidget {
     children: [
       card,
       const SizedBox(height: 8),
-      Padding(
-        padding: const EdgeInsets.only(left: 4),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: source
@@ -1754,16 +1761,10 @@ class _ForecastOverviewWithSource extends StatelessWidget {
                 (line) => Text(
                   line,
                   style: const TextStyle(
-                    color: Color(0xFFF8FBFF),
-                    fontSize: 11,
+                    color: Color(0xFF465A76),
+                    fontSize: 12,
+                    height: 1.4,
                     fontWeight: FontWeight.w700,
-                    shadows: [
-                      Shadow(
-                        color: Color(0x9900163A),
-                        blurRadius: 4,
-                        offset: Offset(0, 1),
-                      ),
-                    ],
                   ),
                 ),
               )
@@ -2371,6 +2372,8 @@ class _TodayActivitiesSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _MoreSection(
     title: 'DEIN TAG AM SEE',
+    titleColor: AppColors.navy,
+    titleBackgroundColor: Colors.white,
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
       child: Column(
@@ -2491,81 +2494,55 @@ class _TodayActivityRow extends StatelessWidget {
   ActivityTimeWindowRecommendation? get _bestTimeWindow =>
       ActivityTimeWindowRecommendations.best(timeWindowRatings);
 
-  double get _rowHeight {
-    final baseHeight = _windDependentActivityIds.contains(activity.id)
-        ? (timeWindowRatings.isEmpty ? 78.0 : 144.0)
-        : (timeWindowRatings.isEmpty ? 54.0 : 104.0);
-    return baseHeight + (_bestTimeWindow == null ? 0 : 18);
-  }
-
   @override
-  Widget build(BuildContext context) => SizedBox(
+  Widget build(BuildContext context) => Padding(
     key: ValueKey('today-activity-${activity.id}'),
-    // Three upcoming intervals can wrap onto two compact chip rows on narrow
-    // phones. Reserve their real height instead of clipping the last row.
-    height: _rowHeight,
+    padding: const EdgeInsets.symmetric(vertical: 14),
     child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(
-              width: 30,
-              child: Icon(activity.icon, color: AppColors.blue, size: 21),
-            ),
-            const SizedBox(width: 7),
+            Icon(activity.icon, color: AppColors.blue, size: 24),
+            const SizedBox(width: 10),
             Expanded(
-              flex: 4,
               child: Text(
                 activity.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.navy,
-                  fontSize: 13,
+                  fontSize: 15,
+                  height: 1.3,
                   fontWeight: FontWeight.w800,
                 ),
               ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              flex: 5,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    _scoreLabel(rating),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
-                    style: TextStyle(
-                      color: _ratingColor(rating.level),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 1),
-                  Text(
-                    rating.reason,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(
-                      color: Color(0xFF71809A),
-                      fontSize: 9,
-                    ),
-                  ),
-                ],
-              ),
-            ),
           ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _scoreLabel(rating),
+          style: TextStyle(
+            color: _ratingColor(rating.level),
+            fontSize: 14,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          rating.reason,
+          key: ValueKey('activity-reason-${activity.id}'),
+          style: const TextStyle(
+            color: Color(0xFF465A76),
+            fontSize: 13,
+            height: 1.45,
+          ),
         ),
         if (_windDependentActivityIds.contains(activity.id))
           Align(
             alignment: Alignment.centerLeft,
             child: Padding(
-              padding: const EdgeInsets.only(left: 31),
+              padding: const EdgeInsets.only(left: 0),
               child: TextButton.icon(
                 key: ValueKey('activity-wind-link-${activity.id}'),
                 onPressed: onViewWindTrend,
@@ -2573,7 +2550,7 @@ class _TodayActivityRow extends StatelessWidget {
                 label: const Text('Windverlauf ansehen'),
                 style: TextButton.styleFrom(
                   foregroundColor: AppColors.deepBlue,
-                  visualDensity: VisualDensity.compact,
+                  minimumSize: const Size(48, 48),
                   padding: const EdgeInsets.symmetric(horizontal: 5),
                   textStyle: const TextStyle(
                     fontSize: 11,
@@ -2585,18 +2562,16 @@ class _TodayActivityRow extends StatelessWidget {
           ),
         if (_bestTimeWindow != null)
           Padding(
-            padding: const EdgeInsets.only(left: 37, top: 1),
+            padding: const EdgeInsets.only(left: 0, top: 1),
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
                 'Beste Zeit: ${_bestTimeWindow!.window.label} · '
                 '${_bestTimeWindow!.rating.score!.toStringAsFixed(1).replaceAll('.', ',')} Punkte',
                 key: ValueKey('best-time-${activity.id}'),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: Color(0xFF526F95),
-                  fontSize: 10,
+                  fontSize: 12,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -2605,12 +2580,12 @@ class _TodayActivityRow extends StatelessWidget {
         if (timeWindowRatings.isNotEmpty) ...[
           const SizedBox(height: 5),
           Padding(
-            padding: const EdgeInsets.only(left: 37),
+            padding: const EdgeInsets.only(left: 0),
             child: Align(
               alignment: Alignment.centerLeft,
               child: Wrap(
-                spacing: 5,
-                runSpacing: 3,
+                spacing: 8,
+                runSpacing: 8,
                 children: [
                   for (final entry in timeWindowRatings.entries)
                     _TimeWindowRatingChip(
@@ -2649,6 +2624,7 @@ class _TimeWindowRatingChip extends StatelessWidget {
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: Text(window.label),
+          scrollable: true,
           content: Text('${_scoreDetail(rating)}\n${rating.reason}'),
           actions: [
             TextButton(
@@ -2659,7 +2635,8 @@ class _TimeWindowRatingChip extends StatelessWidget {
         ),
       ),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: const Color(0xFFF2F7FE),
           borderRadius: BorderRadius.circular(10),
@@ -2667,11 +2644,9 @@ class _TimeWindowRatingChip extends StatelessWidget {
         ),
         child: Text(
           '${window.label} · ${_timeWindowScoreLabel(rating)}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
           style: TextStyle(
             color: _ratingColor(rating.level),
-            fontSize: 9,
+            fontSize: 13,
             fontWeight: FontWeight.w800,
           ),
         ),
@@ -2694,75 +2669,81 @@ class _WeeklyPlannerSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _MoreSection(
     title: 'WOCHENÜBERSICHT',
+    titleColor: AppColors.navy,
+    titleBackgroundColor: Colors.white,
     child: Padding(
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Freizeit-Eignung aus Tagesprognosen',
+            'Tagesprognosen · Für weitere Tage seitlich wischen',
             style: TextStyle(color: Color(0xFF71809A), fontSize: 12),
           ),
           const SizedBox(height: 10),
           LayoutBuilder(
             builder: (context, constraints) {
-              // Keep all seven day columns visible inside the card. The
-              // activity column remains wide enough for the longest current
-              // label; the remaining width is split equally across days.
-              final activityWidth = math.min(
-                116.0,
-                math.max(100.0, constraints.maxWidth * .34),
-              );
-              final dayWidth =
-                  (constraints.maxWidth - activityWidth) / days.length;
-              return Table(
-                key: const ValueKey('weekly-planner-table'),
-                defaultColumnWidth: const FixedColumnWidth(52),
-                columnWidths: {
-                  0: FixedColumnWidth(activityWidth),
-                  for (var index = 1; index <= days.length; index++)
-                    index: FixedColumnWidth(dayWidth),
-                },
-                border: TableBorder.all(
-                  color: const Color(0xFFE6EDF6),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                children: [
-                  TableRow(
-                    decoration: const BoxDecoration(color: Color(0xFFF5F9FF)),
+              final scale = MediaQuery.textScalerOf(context).scale(1);
+              final activityWidth = 140.0 * scale;
+              final dayWidth = 64.0 * scale;
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: activityWidth + dayWidth * days.length,
+                  child: Table(
+                    key: const ValueKey('weekly-planner-table'),
+                    defaultColumnWidth: const FixedColumnWidth(52),
+                    columnWidths: {
+                      0: FixedColumnWidth(activityWidth),
+                      for (var index = 1; index <= days.length; index++)
+                        index: FixedColumnWidth(dayWidth),
+                    },
+                    border: TableBorder.all(
+                      color: const Color(0xFFE6EDF6),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                     children: [
-                      const _PlannerTableCell(''),
-                      ...days.map(
-                        (day) => _PlannerTableCell(
-                          _shortDayLabel(day, isToday: day == days.first),
-                          isDayHeader: true,
+                      TableRow(
+                        decoration: const BoxDecoration(
+                          color: Color(0xFFF5F9FF),
+                        ),
+                        children: [
+                          const _PlannerTableCell(''),
+                          ...days.map(
+                            (day) => _PlannerTableCell(
+                              _shortDayLabel(day, isToday: day == days.first),
+                              isDayHeader: true,
+                              isToday: day == days.first,
+                            ),
+                          ),
+                        ],
+                      ),
+                      ...activities.map(
+                        (activity) => TableRow(
+                          children: [
+                            KeyedSubtree(
+                              key: ValueKey('weekly-activity-${activity.id}'),
+                              child: _PlannerTableCell(
+                                activity.label,
+                                alignLeft: true,
+                              ),
+                            ),
+                            ...days.map(
+                              (day) => _PlannerRatingCell(
+                                ratingsByDay[day]?[activity.id] ??
+                                    const ActivityRating(
+                                      ActivityRatingLevel.unavailable,
+                                      'Nicht genügend Wetterdaten verfügbar',
+                                    ),
+                                isToday: day == days.first,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                  ...activities.map(
-                    (activity) => TableRow(
-                      children: [
-                        KeyedSubtree(
-                          key: ValueKey('weekly-activity-${activity.id}'),
-                          child: _PlannerTableCell(
-                            activity.label,
-                            alignLeft: true,
-                          ),
-                        ),
-                        ...days.map(
-                          (day) => _PlannerRatingCell(
-                            ratingsByDay[day]?[activity.id] ??
-                                const ActivityRating(
-                                  ActivityRatingLevel.unavailable,
-                                  'Nicht genügend Wetterdaten verfügbar',
-                                ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                ),
               );
             },
           ),
@@ -2788,47 +2769,46 @@ String _timeWindowScoreLabel(ActivityRating rating) => rating.score == null
     : rating.score!.toStringAsFixed(1).replaceAll('.', ',');
 
 Color _ratingColor(ActivityRatingLevel level) => switch (level) {
-  ActivityRatingLevel.veryGood => AppColors.activityVeryGood,
-  ActivityRatingLevel.good => AppColors.activityGood,
-  ActivityRatingLevel.limited => AppColors.activityLimited,
-  ActivityRatingLevel.unsuitable => AppColors.activityUnsuitable,
-  ActivityRatingLevel.unavailable => AppColors.activityUnavailable,
+  ActivityRatingLevel.veryGood => const Color(0xFF176B36),
+  ActivityRatingLevel.good => const Color(0xFF2C753E),
+  ActivityRatingLevel.limited => const Color(0xFF92500F),
+  ActivityRatingLevel.unsuitable => const Color(0xFFB02D2D),
+  ActivityRatingLevel.unavailable => const Color(0xFF52637A),
 };
 
 class _PlannerRatingCell extends StatelessWidget {
-  const _PlannerRatingCell(this.rating);
+  const _PlannerRatingCell(this.rating, {this.isToday = false});
 
   final ActivityRating rating;
+  final bool isToday;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-    height: 36,
-    child: Center(
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => showDialog<void>(
-            context: context,
-            builder: (dialogContext) => AlertDialog(
-              title: const Text('Aktivitätsbewertung'),
-              content: Text('${_scoreDetail(rating)}\n${rating.reason}'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Schließen'),
-                ),
-              ],
+  Widget build(BuildContext context) => Material(
+    color: isToday ? const Color(0xFFEAF2FF) : Colors.transparent,
+    child: InkWell(
+      onTap: () => showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Aktivitätsbewertung'),
+          scrollable: true,
+          content: Text('${_scoreDetail(rating)}\n${rating.reason}'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Schließen'),
             ),
-          ),
-          child: Center(
-            child: Text(
-              _weeklyScoreLabel(rating),
-              maxLines: 1,
-              style: TextStyle(
-                color: _ratingColor(rating.level),
-                fontSize: 9,
-                fontWeight: FontWeight.w900,
-              ),
+          ],
+        ),
+      ),
+      child: SizedBox(
+        height: 56 * MediaQuery.textScalerOf(context).scale(1),
+        child: Center(
+          child: Text(
+            _weeklyScoreLabel(rating),
+            style: TextStyle(
+              color: _ratingColor(rating.level),
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
             ),
           ),
         ),
@@ -2842,42 +2822,30 @@ class _PlannerTableCell extends StatelessWidget {
     this.text, {
     this.alignLeft = false,
     this.isDayHeader = false,
+    this.isToday = false,
   });
 
   final String text;
   final bool alignLeft;
   final bool isDayHeader;
+  final bool isToday;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-    height: 36,
-    child: Align(
-      alignment: alignLeft ? Alignment.centerLeft : Alignment.center,
-      child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: isDayHeader ? 1 : 4),
-        child: isDayHeader
-            ? FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  text,
-                  maxLines: 1,
-                  style: const TextStyle(
-                    color: Color(0xFF64738D),
-                    fontSize: 9,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              )
-            : Text(
-                text,
-                maxLines: alignLeft ? 2 : 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: const Color(0xFF64738D),
-                  fontSize: alignLeft ? 10 : 9,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
+  Widget build(BuildContext context) => Container(
+    constraints: BoxConstraints(
+      minHeight: 56 * MediaQuery.textScalerOf(context).scale(1),
+    ),
+    color: isToday ? AppColors.deepBlue : null,
+    alignment: alignLeft ? Alignment.centerLeft : Alignment.center,
+    padding: EdgeInsets.symmetric(horizontal: isDayHeader ? 4 : 8, vertical: 8),
+    child: Text(
+      text,
+      textAlign: alignLeft ? TextAlign.left : TextAlign.center,
+      style: TextStyle(
+        color: isToday ? Colors.white : AppColors.navy,
+        fontSize: isDayHeader ? 12 : 13,
+        height: 1.35,
+        fontWeight: FontWeight.w800,
       ),
     ),
   );
@@ -4171,11 +4139,13 @@ class _MoreSection extends StatelessWidget {
     required this.title,
     required this.child,
     this.titleColor = Colors.white,
+    this.titleBackgroundColor,
   });
 
   final String title;
   final Widget child;
   final Color titleColor;
+  final Color? titleBackgroundColor;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -4183,13 +4153,22 @@ class _MoreSection extends StatelessWidget {
     children: [
       Padding(
         padding: const EdgeInsets.only(left: 4, bottom: 8),
-        child: Text(
-          title,
-          style: TextStyle(
-            color: titleColor,
-            fontSize: 12,
-            fontWeight: FontWeight.w900,
-            letterSpacing: .5,
+        child: Container(
+          padding: titleBackgroundColor == null
+              ? EdgeInsets.zero
+              : const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: titleBackgroundColor,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            title,
+            style: TextStyle(
+              color: titleColor,
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+              letterSpacing: .5,
+            ),
           ),
         ),
       ),
@@ -5664,9 +5643,9 @@ class _PhotoBackdrop extends StatelessWidget {
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [
-                  Color(0xD90052AE),
-                  Color(0xA3108BD0),
-                  Color(0x1AFFFFFF),
+                  Color(0xF0183559),
+                  Color(0xD9184C78),
+                  Color(0x99EAF2FA),
                 ],
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
