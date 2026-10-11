@@ -29,8 +29,14 @@ import 'station_data_cache.dart';
 import 'station_selection_service.dart';
 import 'vorarlberg_hydro_service.dart';
 import 'wind_forecast_service.dart';
+import 'web_url_strategy.dart';
 
-void main() => runApp(const BodenseePegelApp());
+void main() {
+  // Use stable paths on the web so a refresh retains the selected main page.
+  // Legacy #/heute links are resolved separately by [AppRoutes].
+  if (kIsWeb) configureWebUrlStrategy();
+  runApp(const BodenseePegelApp());
+}
 
 abstract final class AppColors {
   static const blue = Color(0xFF0879EE);
@@ -84,6 +90,7 @@ class StationLiveData {
     required this.unit,
     required this.fractionDigits,
     required this.changeFractionDigits,
+    this.changeUnit,
     this.originalWaterLevelLabel,
     this.forecast,
   });
@@ -94,6 +101,10 @@ class StationLiveData {
   final String unit;
   final int fractionDigits;
   final int changeFractionDigits;
+
+  /// The unit of a trend can differ from the absolute level unit. Berlingen,
+  /// for example, shows its level in m ü. M. but its changes in cm.
+  final String? changeUnit;
   final String? originalWaterLevelLabel;
   final BafuForecastData? forecast;
 
@@ -104,6 +115,8 @@ class StationLiveData {
   String formatChange(double value) => value == value.roundToDouble()
       ? value.round().toString()
       : value.toStringAsFixed(changeFractionDigits).replaceAll('.', ',');
+
+  String get effectiveChangeUnit => changeUnit ?? unit;
 
   String get formattedTime {
     final localTime = current.timestamp.toLocal();
@@ -149,6 +162,7 @@ class _BodenseePegelAppState extends State<BodenseePegelApp> {
         scaffoldBackgroundColor: AppColors.mist,
         textTheme: ThemeData.light().textTheme.apply(fontFamily: 'Roboto'),
       ),
+      initialRoute: kIsWeb ? AppRoutes.initialPathForUri(Uri.base) : null,
       onGenerateInitialRoutes: (initialRouteName) => [
         _appRouteFor(
           RouteSettings(name: initialRouteName),
@@ -212,6 +226,17 @@ abstract final class AppRoutes {
   static String normalize(String? path) => destinationForPath(path) == null
       ? livePath
       : (path == '/' ? livePath : path!);
+
+  /// Resolves canonical path URLs and former Flutter hash URLs. A legacy
+  /// fragment wins only when it itself names a supported application route.
+  static String initialPathForUri(Uri uri) {
+    final fragment = uri.fragment;
+    if (fragment.startsWith('/')) {
+      final legacyPath = Uri.tryParse(fragment)?.path ?? fragment;
+      if (destinationForPath(legacyPath) != null) return normalize(legacyPath);
+    }
+    return normalize(uri.path);
+  }
 }
 
 Route<void> _appRouteFor(
@@ -616,6 +641,9 @@ class _DashboardPageState extends State<DashboardPage> {
         unit: usesCentimeters ? 'cm' : 'm ü. M.',
         fractionDigits: usesCentimeters ? 0 : 2,
         changeFractionDigits: 1,
+        // BAFU supplies absolute levels in m ü. M.; their difference is
+        // converted to centimetres above and must never inherit that unit.
+        changeUnit: 'cm',
         originalWaterLevelLabel: usesCentimeters
             ? '${liveData.current.waterLevelMasl.toStringAsFixed(3).replaceAll('.', ',')} m ü. M.'
             : null,
@@ -1415,6 +1443,18 @@ class _TodayPageState extends State<TodayPage> {
                   ),
         },
     };
+    final timeWindowAvailabilityNotice =
+        timeWindowSchedule.isNotEmpty &&
+            timeWindowForecasts.every((forecast) => !forecast.hasForecastPoints)
+        ? 'Für die kommenden Zeitfenster liegen derzeit keine passenden stündlichen Prognosedaten vor.'
+        : timeWindowForecasts.any(
+            (forecast) =>
+                !forecast.window.isCurrent &&
+                forecast.hasForecastPoints &&
+                !forecast.hasCompleteHourlyCoverage,
+          )
+        ? 'Einzelne Zeitfenster sind wegen unvollständiger stündlicher Prognosedaten nicht bewertbar.'
+        : null;
     Widget content(List<OfficialWarning> motorboatWarnings) => Column(
       children: [
         if (motorboatWarnings.isNotEmpty) ...[
@@ -1425,6 +1465,7 @@ class _TodayPageState extends State<TodayPage> {
           activities: activities,
           ratings: ratingsByDay[_selectedDate] ?? const {},
           timeWindowRatings: timeWindowRatings,
+          timeWindowAvailabilityNotice: timeWindowAvailabilityNotice,
           onViewWindTrend: () => _navigateTo(
             context,
             AppDestination.live,
@@ -2317,12 +2358,14 @@ class _TodayActivitiesSection extends StatelessWidget {
     required this.activities,
     required this.ratings,
     required this.timeWindowRatings,
+    this.timeWindowAvailabilityNotice,
     required this.onViewWindTrend,
   });
 
   final List<_PlannerActivity> activities;
   final Map<String, ActivityRating> ratings;
   final Map<ActivityTimeWindow, Map<String, ActivityRating>> timeWindowRatings;
+  final String? timeWindowAvailabilityNotice;
   final VoidCallback onViewWindTrend;
 
   @override
@@ -2332,6 +2375,20 @@ class _TodayActivitiesSection extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
       child: Column(
         children: [
+          if (timeWindowAvailabilityNotice != null) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
+              child: Text(
+                timeWindowAvailabilityNotice!,
+                key: const ValueKey('time-window-availability-notice'),
+                style: const TextStyle(
+                  color: Color(0xFF71809A),
+                  fontSize: 12,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
           for (var index = 0; index < activities.length; index++) ...[
             _TodayActivityRow(
               activity: activities[index],
@@ -2912,10 +2969,10 @@ class _MapPageState extends State<MapPage> {
           children: [
             FlutterMap(
               options: const MapOptions(
-                // Framed so that all supported stations remain visible
-                // while keeping the map focused on the Bodensee.
-                initialCenter: LatLng(47.58, 9.46),
-                initialZoom: 9.85,
+                // Framed for the full four-station span, including Berlingen
+                // in the west, on narrow smartphone viewports.
+                initialCenter: LatLng(47.59, 9.38),
+                initialZoom: 8.2,
                 minZoom: 7,
                 maxZoom: 17,
               ),
@@ -6050,7 +6107,7 @@ class _FavoriteStationCard extends StatelessWidget {
                         ? '+'
                         : change < 0
                         ? '−'
-                        : '±'}${data!.formatChange(change.abs())} ${data.unit} · 24 h';
+                        : '±'}${data!.formatChange(change.abs())} ${data.effectiveChangeUnit} · 24 h';
               // A water-level change is information, not a warning. Warning
               // colours remain reserved for future, official alert states.
               final detailColor = change == null
@@ -6259,7 +6316,7 @@ class _Change24Hours extends StatelessWidget {
         ? '−'
         : '±';
     final value = data?.formatChange(change.abs()) ?? '';
-    final unit = data!.unit;
+    final unit = data!.effectiveChangeUnit;
     // A 24-hour trend describes a measurement only. Colour is therefore
     // deliberately neutral; warning colours remain reserved for official
     // warning and danger states.

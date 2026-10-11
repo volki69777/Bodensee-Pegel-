@@ -36,6 +36,46 @@ void main() {
     expect(find.byType(DashboardPage), findsOneWidget);
   });
 
+  test('resolves canonical and legacy hash main-page URLs', () {
+    expect(
+      AppRoutes.initialPathForUri(
+        Uri.parse('https://example.test/aktivitaeten'),
+      ),
+      '/aktivitaeten',
+    );
+    expect(
+      AppRoutes.initialPathForUri(Uri.parse('https://example.test/#/heute')),
+      '/heute',
+    );
+    expect(
+      AppRoutes.initialPathForUri(Uri.parse('https://example.test/#/karte')),
+      '/karte',
+    );
+    expect(
+      AppRoutes.initialPathForUri(Uri.parse('https://example.test/unbekannt')),
+      '/live',
+    );
+  });
+
+  test('keeps Berlingen absolute but expresses its change in centimetres', () {
+    final data = StationLiveData(
+      current: StationReading(
+        value: 394.21,
+        timestamp: DateTime.utc(2026, 10, 11, 8),
+      ),
+      history24Hours: null,
+      change24Hours: 70,
+      unit: 'm ü. M.',
+      changeUnit: 'cm',
+      fractionDigits: 2,
+      changeFractionDigits: 1,
+    );
+
+    expect(data.formatValue(data.current.value), '394,21');
+    expect(data.formatChange(data.change24Hours!), '70');
+    expect(data.effectiveChangeUnit, 'cm');
+  });
+
   testWidgets('shows the development HVZ graphic only for Konstanz', (
     WidgetTester tester,
   ) async {
@@ -65,12 +105,13 @@ void main() {
     final windCard = find.byKey(const ValueKey('wind-forecast-card'));
     expect(windCard, findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('live-station-selector')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('ROMANSHORN').last);
-    await tester.pumpAndSettle();
-
-    expect(windCard, findsOneWidget);
+    for (final station in const ['ROMANSHORN', 'BREGENZ', 'BERLINGEN']) {
+      await tester.tap(find.byKey(const ValueKey('live-station-selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(station).last);
+      await tester.pumpAndSettle();
+      expect(windCard, findsOneWidget);
+    }
   });
 
   testWidgets('shows wind links only for wind-dependent activities', (
@@ -1026,6 +1067,7 @@ void main() {
     ('aa9179c1-17ef-4c61-a48a-74193fa7bfdf', 'KONSTANZ'),
     ('bafu-2032', 'ROMANSHORN'),
     ('vowis-200337', 'BREGENZ'),
+    ('bafu-2043', 'BERLINGEN'),
   ]) {
     testWidgets('opens ${station.$2} from its map panel', (
       WidgetTester tester,

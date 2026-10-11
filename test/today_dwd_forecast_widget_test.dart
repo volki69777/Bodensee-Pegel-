@@ -573,6 +573,10 @@ void main() {
       find.descendant(of: morning, matching: find.textContaining('–')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey('time-window-availability-notice')),
+      findsOneWidget,
+    );
   });
 }
 
