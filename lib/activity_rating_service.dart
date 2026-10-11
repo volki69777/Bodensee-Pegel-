@@ -122,7 +122,44 @@ abstract final class ActivityRatingService {
       'wandern' => _hiking(data),
       _ => _unavailable,
     };
-    return _withScore(activityId, data, rating);
+    final scored = _withScore(activityId, data, rating);
+    return activityId == 'motorboot'
+        ? _withMotorboatTemperatureCap(data, scored)
+        : scored;
+  }
+
+  /// Use the air maximum of the supplied day or individual time window.
+  /// Missing temperatures leave the wind/gust/rain result unchanged.
+  static ActivityRating _withMotorboatTemperatureCap(
+    ActivityForecastData data,
+    ActivityRating rating,
+  ) {
+    final temperature = data.temperatureMaximumCelsius;
+    final score = rating.score;
+    if (temperature == null || !temperature.isFinite || score == null) {
+      return rating;
+    }
+    final cap = switch (temperature) {
+      < 10 => 3.0,
+      < 15 => 4.0,
+      < 18 => 5.9,
+      < 21 => 7.9,
+      _ => 10.0,
+    };
+    if (score <= cap) return rating;
+    final level = switch (cap) {
+      >= 8 => ActivityRatingLevel.veryGood,
+      >= 6 => ActivityRatingLevel.good,
+      >= 4 => ActivityRatingLevel.limited,
+      _ => ActivityRatingLevel.unsuitable,
+    };
+    return ActivityRating(
+      level,
+      'Niedrige Lufttemperatur · maximal ${_number(temperature)} °C · '
+      'Komfort begrenzt auf ${cap.toStringAsFixed(1).replaceAll('.', ',')} Punkte. '
+      '${rating.reason}',
+      score: cap,
+    );
   }
 
   static const _unavailable = ActivityRating(
@@ -345,8 +382,8 @@ abstract final class ActivityRatingService {
     return _motorboatForProfile(data, _motorboatThresholds(profile));
   }
 
-  /// Keeps the original Motorboot V1 result intact until the person has
-  /// explicitly selected a profile in the settings.
+  /// Keeps the original wind/gust/rain baseline until the person has
+  /// explicitly selected a profile. The comfort cap is applied afterwards.
   static ActivityRating _legacyMotorboat(ActivityForecastData data) {
     final wind = data.windKilometersPerHour;
     final gust = data.gustKilometersPerHour;
@@ -391,7 +428,11 @@ abstract final class ActivityRatingService {
       );
     }
     if (_above(gust, thresholds.unsuitableGust)) return _unsuitableGust(gust!);
-    if (_between(wind, thresholds.limitedWindStart, thresholds.unsuitableWind)) {
+    if (_between(
+      wind,
+      thresholds.limitedWindStart,
+      thresholds.unsuitableWind,
+    )) {
       return _limitedWind(wind!);
     }
     if (_above(gustDifference, thresholds.limitedGustDifference)) {
@@ -401,7 +442,11 @@ abstract final class ActivityRatingService {
         gust!,
       );
     }
-    if (_between(gust, thresholds.limitedGustStart, thresholds.unsuitableGust)) {
+    if (_between(
+      gust,
+      thresholds.limitedGustStart,
+      thresholds.unsuitableGust,
+    )) {
       return _limitedGust(gust!);
     }
     if (_heavyRain(data)) return _limitedRainFor(data);

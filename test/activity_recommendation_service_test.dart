@@ -130,10 +130,9 @@ void main() {
             ),
         };
         final recommendation = ActivityRecommendationService.best(ratings)!;
-        expect(
-          recommendation.activityId,
-          profile == MotorboatRatingProfile.smallOpen ? 'angeln' : 'motorboot',
-        );
+        // At 10 °C every motorboat profile is now capped at four points.
+        expect(ratings['motorboot']!.score, 4);
+        expect(recommendation.activityId, 'angeln');
         expect(
           identical(recommendation.rating, ratings[recommendation.activityId]),
           isTrue,
