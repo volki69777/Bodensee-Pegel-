@@ -496,6 +496,84 @@ void main() {
     await tester.pumpAndSettle();
     expect(bestTime, findsNothing);
   });
+
+  testWidgets(
+    'Today rates only fully covered future-day windows and recommends the best one',
+    (tester) async {
+      final now = DateTime.now().toUtc();
+      final service = DwdForecastService(
+        client: MockClient(
+          (_) async =>
+              http.Response.bytes(_kmz(_futureTimeWindowKml(now)), 200),
+        ),
+      );
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _scopedToday(
+          station: StationSelectionService(),
+          service: service,
+          nowProvider: () => now,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final tomorrow = find.byKey(const ValueKey('today-day-1'));
+      await tester.ensureVisible(tomorrow);
+      await tester.tap(tomorrow);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('time-window-sup_kajak-Morgen 06–12')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('time-window-sup_kajak-Nachmittag 12–18')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('time-window-sup_kajak-Abend 18–22')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('best-time-sup_kajak')), findsOneWidget);
+    },
+  );
+
+  testWidgets('Today marks a partially covered future window unavailable', (
+    tester,
+  ) async {
+    final now = DateTime.now().toUtc();
+    final service = DwdForecastService(
+      client: MockClient(
+        (_) async => http.Response.bytes(
+          _kmz(_futureTimeWindowKml(now, omitMorningHour: 11)),
+          200,
+        ),
+      ),
+    );
+    await tester.pumpWidget(
+      _scopedToday(
+        station: StationSelectionService(),
+        service: service,
+        nowProvider: () => now,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final tomorrow = find.byKey(const ValueKey('today-day-1'));
+    await tester.ensureVisible(tomorrow);
+    await tester.tap(tomorrow);
+    await tester.pumpAndSettle();
+
+    final morning = find.byKey(
+      const ValueKey('time-window-sup_kajak-Morgen 06–12'),
+    );
+    expect(morning, findsOneWidget);
+    expect(
+      find.descendant(of: morning, matching: find.textContaining('–')),
+      findsOneWidget,
+    );
+  });
 }
 
 Widget _scopedToday({
@@ -683,6 +761,66 @@ String _timeWindowKml(DateTime now) {
 <dwd:Forecast dwd:elementName="FX1"><dwd:value>4 5 6</dwd:value></dwd:Forecast>
 <dwd:Forecast dwd:elementName="DD"><dwd:value>90 180 270</dwd:value></dwd:Forecast>
 <dwd:Forecast dwd:elementName="RR1c"><dwd:value>0.2 0.2 0.1</dwd:value></dwd:Forecast>
+</Placemark></Document></kml>''';
+}
+
+String _futureTimeWindowKml(DateTime now, {int? omitMorningHour}) {
+  timezone_data.initializeTimeZones();
+  final berlin = tz.getLocation('Europe/Berlin');
+  final localNow = tz.TZDateTime.from(now, berlin);
+  final tomorrow = tz.TZDateTime(
+    berlin,
+    localNow.year,
+    localNow.month,
+    localNow.day + 1,
+  );
+  final hours = <int>[
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+  ].where((hour) => hour != omitMorningHour).toList();
+  final timestamps = hours
+      .map(
+        (hour) =>
+            '<dwd:TimeStep>${tz.TZDateTime(berlin, tomorrow.year, tomorrow.month, tomorrow.day, hour).toUtc().toIso8601String()}</dwd:TimeStep>',
+      )
+      .join();
+  String values(List<num> input) => input.join(' ');
+  final temperatures = values(
+    List.generate(hours.length, (index) => 292.15 + index * .2),
+  );
+  final wind = values(
+    List.generate(hours.length, (index) => index < 6 ? 2 : 4),
+  );
+  final gust = values(
+    List.generate(hours.length, (index) => index < 6 ? 3 : 5),
+  );
+  final rain = values(
+    List.generate(hours.length, (index) => index < 6 ? 0 : .1),
+  );
+  final direction = values(List.filled(hours.length, 225));
+  return '''<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:dwd="https://opendata.dwd.de/weather/lib/pointforecast_dwd_extension_V1_0.xsd">
+<dwd:ProductDefinition><dwd:ForecastTimeSteps>$timestamps</dwd:ForecastTimeSteps></dwd:ProductDefinition>
+<Document><Placemark><name>10929</name><description>KONSTANZ</description><Point><coordinates>9.18,47.68,443</coordinates></Point>
+<dwd:Forecast dwd:elementName="TTT"><dwd:value>$temperatures</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="FF"><dwd:value>$wind</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="FX1"><dwd:value>$gust</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="DD"><dwd:value>$direction</dwd:value></dwd:Forecast>
+<dwd:Forecast dwd:elementName="RR1c"><dwd:value>$rain</dwd:value></dwd:Forecast>
 </Placemark></Document></kml>''';
 }
 

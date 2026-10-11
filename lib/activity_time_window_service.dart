@@ -26,6 +26,10 @@ class ActivityTimeWindow {
   final DateTime startUtc;
   final DateTime endUtc;
   final bool isCurrent;
+
+  /// Number of hourly source points required for a fully covered window.
+  /// Current partial-day windows do not use this value for rating eligibility.
+  int get expectedHourlyPointCount => endUtc.difference(startUtc).inHours;
 }
 
 /// A source-independent view of one original hourly forecast point.
@@ -110,6 +114,22 @@ class ActivityTimeWindowForecast {
   final String? weatherLabel;
 
   bool get hasForecastPoints => points.isNotEmpty;
+
+  /// Future windows are considered rateable only when each expected hourly
+  /// source point is present. This intentionally checks availability of
+  /// original points, not whether every optional weather parameter exists.
+  bool get hasCompleteHourlyCoverage {
+    final expected = window.expectedHourlyPointCount;
+    if (expected == 0) return hasForecastPoints;
+    final actualTimestamps = points
+        .map((point) => point.timestampUtc.toUtc().millisecondsSinceEpoch)
+        .toSet();
+    return Iterable<int>.generate(
+      expected,
+      (hour) =>
+          window.startUtc.add(Duration(hours: hour)).millisecondsSinceEpoch,
+    ).every(actualTimestamps.contains);
+  }
 }
 
 /// The best existing time-window result for one activity.
@@ -206,6 +226,60 @@ abstract final class ActivityTimeWindowAggregation {
     }
     if (hour < 22) return [current('Jetzt–22', 22)];
     return const [];
+  }
+
+  /// Returns only intervals that can still be shown for [selectedDate].
+  ///
+  /// Today keeps the established future-facing schedule. A later local day
+  /// uses its three complete daytime intervals; past days have no intervals.
+  static List<ActivityTimeWindow> scheduleForDay({
+    required DateTime selectedDate,
+    required DateTime nowUtc,
+    required tz.Location location,
+  }) {
+    final now = nowUtc.toUtc();
+    final localNow = tz.TZDateTime.from(now, location);
+    final selectedLocalDay = tz.TZDateTime(
+      location,
+      selectedDate.year,
+      selectedDate.month,
+      selectedDate.day,
+    );
+    final currentLocalDay = tz.TZDateTime(
+      location,
+      localNow.year,
+      localNow.month,
+      localNow.day,
+    );
+    if (selectedLocalDay.isBefore(currentLocalDay)) return const [];
+    if (selectedLocalDay == currentLocalDay) {
+      return schedule(nowUtc: now, location: location);
+    }
+
+    ActivityTimeWindow future(String label, int startHour, int endHour) =>
+        ActivityTimeWindow(
+          label: label,
+          startUtc: tz.TZDateTime(
+            location,
+            selectedDate.year,
+            selectedDate.month,
+            selectedDate.day,
+            startHour,
+          ).toUtc(),
+          endUtc: tz.TZDateTime(
+            location,
+            selectedDate.year,
+            selectedDate.month,
+            selectedDate.day,
+            endHour,
+          ).toUtc(),
+          isCurrent: false,
+        );
+    return [
+      future('Morgen 06–12', 6, 12),
+      future('Nachmittag 12–18', 12, 18),
+      future('Abend 18–22', 18, 22),
+    ];
   }
 
   static List<ActivityTimeWindowForecast> aggregate({

@@ -1375,39 +1375,44 @@ class _TodayPageState extends State<TodayPage> {
         },
     };
     final nowUtc = _nowProvider().toUtc();
-    final nowLocal = tz.TZDateTime.from(nowUtc, timeWindowLocation);
-    final selectedDayIsToday =
-        _selectedDate == DateTime(nowLocal.year, nowLocal.month, nowLocal.day);
-    final timeWindowForecasts = selectedDayIsToday
-        ? ActivityTimeWindowAggregation.aggregate(
-            points: timeWindowPoints,
-            windows: ActivityTimeWindowAggregation.schedule(
-              nowUtc: nowUtc,
-              location: timeWindowLocation,
-            ),
-          )
-        : const <ActivityTimeWindowForecast>[];
+    final timeWindowSchedule = ActivityTimeWindowAggregation.scheduleForDay(
+      selectedDate: _selectedDate,
+      nowUtc: nowUtc,
+      location: timeWindowLocation,
+    );
+    final timeWindowForecasts = ActivityTimeWindowAggregation.aggregate(
+      points: timeWindowPoints,
+      windows: timeWindowSchedule,
+    );
     final timeWindowRatings = <ActivityTimeWindow, Map<String, ActivityRating>>{
       for (final forecast in ActivityTimeWindowAggregation.withForecastPoints(
         timeWindowForecasts,
       ))
         forecast.window: {
           for (final activity in activities)
-            activity.id: ActivityRatingService.rate(
-              activityId: activity.id,
-              data: _activityTimeWindowForecastData(
-                forecast,
-                motorboatProfile: _motorboatRatingProfile,
-                // A local VOWIS water measurement is a current observation,
-                // not a forecast. It is therefore used only in the genuinely
-                // running Bregenz interval and never propagated to later ones.
-                waterTemperatureCelsius:
-                    _station.uuid == VorarlbergHydroService.bregenz.uuid &&
-                        forecast.window.isCurrent
-                    ? bregenzWaterTemperatureToday
-                    : null,
-              ),
-            ),
+            activity.id:
+                forecast.window.isCurrent || forecast.hasCompleteHourlyCoverage
+                ? ActivityRatingService.rate(
+                    activityId: activity.id,
+                    data: _activityTimeWindowForecastData(
+                      forecast,
+                      motorboatProfile: _motorboatRatingProfile,
+                      // A local VOWIS water measurement is a current
+                      // observation, not a forecast. It is therefore used
+                      // only in the genuinely running Bregenz interval and
+                      // never propagated to later ones.
+                      waterTemperatureCelsius:
+                          _station.uuid ==
+                                  VorarlbergHydroService.bregenz.uuid &&
+                              forecast.window.isCurrent
+                          ? bregenzWaterTemperatureToday
+                          : null,
+                    ),
+                  )
+                : const ActivityRating(
+                    ActivityRatingLevel.unavailable,
+                    'Prognosezeitraum unvollständig',
+                  ),
         },
     };
     Widget content(List<OfficialWarning> motorboatWarnings) => Column(

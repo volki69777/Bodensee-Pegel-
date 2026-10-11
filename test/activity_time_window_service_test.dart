@@ -66,6 +66,59 @@ void main() {
         expect(windows.first.isCurrent, isTrue);
       }
     });
+
+    test('creates three complete intervals for a future local day', () {
+      final now = _berlinUtc(2026, 9, 14, 10, 37);
+      final today = ActivityTimeWindowAggregation.scheduleForDay(
+        selectedDate: DateTime(2026, 9, 14),
+        nowUtc: now,
+        location: ActivityTimeWindowAggregation.berlin,
+      );
+      final tomorrow = ActivityTimeWindowAggregation.scheduleForDay(
+        selectedDate: DateTime(2026, 9, 15),
+        nowUtc: now,
+        location: ActivityTimeWindowAggregation.berlin,
+      );
+      final yesterday = ActivityTimeWindowAggregation.scheduleForDay(
+        selectedDate: DateTime(2026, 9, 13),
+        nowUtc: now,
+        location: ActivityTimeWindowAggregation.berlin,
+      );
+
+      expect(today.map((window) => window.label), [
+        'Jetzt–12',
+        'Nachmittag 12–18',
+        'Abend 18–22',
+      ]);
+      expect(tomorrow.map((window) => window.label), [
+        'Morgen 06–12',
+        'Nachmittag 12–18',
+        'Abend 18–22',
+      ]);
+      expect(tomorrow.map((window) => window.expectedHourlyPointCount), [
+        6,
+        6,
+        4,
+      ]);
+      expect(yesterday, isEmpty);
+    });
+
+    test('uses the selected future local day across summer time', () {
+      final location = ActivityTimeWindowAggregation.zurich;
+      final tomorrow = ActivityTimeWindowAggregation.scheduleForDay(
+        selectedDate: DateTime(2026, 3, 30),
+        nowUtc: tz.TZDateTime(location, 2026, 3, 29, 10).toUtc(),
+        location: location,
+      );
+
+      final morningStart = tz.TZDateTime.from(
+        tomorrow.first.startUtc,
+        location,
+      );
+      final morningEnd = tz.TZDateTime.from(tomorrow.first.endUtc, location);
+      expect(morningStart, tz.TZDateTime(location, 2026, 3, 30, 6));
+      expect(morningEnd, tz.TZDateTime(location, 2026, 3, 30, 12));
+    });
   });
 
   group('ActivityTimeWindowAggregation.aggregate', () {
@@ -213,6 +266,58 @@ void main() {
         );
       },
     );
+
+    test('requires all original hourly points for a future rating', () {
+      final window = _window('Morgen 06–12', 6, 12);
+      List<ActivityTimeWindowPoint> hourlyPoints(int count) => List.generate(
+        count,
+        (index) => _point(
+          _berlinUtc(2026, 9, 14, 6 + index),
+          temperature: 18,
+          rain: 0,
+          wind: 10,
+          gust: 16,
+        ),
+      );
+
+      final complete = ActivityTimeWindowAggregation.aggregate(
+        points: hourlyPoints(6),
+        windows: [window],
+      ).single;
+      final partial = ActivityTimeWindowAggregation.aggregate(
+        points: hourlyPoints(5),
+        windows: [window],
+      ).single;
+
+      expect(complete.hasForecastPoints, isTrue);
+      expect(complete.hasCompleteHourlyCoverage, isTrue);
+      expect(partial.hasForecastPoints, isTrue);
+      expect(partial.hasCompleteHourlyCoverage, isFalse);
+    });
+
+    test('does not turn missing values into a future-day rating', () {
+      final window = _window('Morgen 06–12', 6, 12);
+      final forecast = ActivityTimeWindowAggregation.aggregate(
+        points: List.generate(
+          6,
+          (index) => _point(_berlinUtc(2026, 9, 14, 6 + index)),
+        ),
+        windows: [window],
+      ).single;
+      final rating = ActivityRatingService.rate(
+        activityId: 'sup_kajak',
+        data: ActivityForecastData(
+          temperatureMaximumCelsius: forecast.temperatureMaximumCelsius,
+          precipitationMillimeters: forecast.precipitationMillimeters,
+          windKilometersPerHour: forecast.representativeWindKilometersPerHour,
+          gustKilometersPerHour: forecast.maximumGustKilometersPerHour,
+        ),
+      );
+
+      expect(forecast.hasCompleteHourlyCoverage, isTrue);
+      expect(rating.level, ActivityRatingLevel.unavailable);
+      expect(rating.score, isNull);
+    });
   });
 
   group('ActivityTimeWindowRecommendations.best', () {
@@ -268,25 +373,22 @@ void main() {
                 motorboatProfile: profile,
               ),
             );
-        final smallRatings = {
-          current: rating(MotorboatRatingProfile.smallOpen, 20),
-          afternoon: rating(MotorboatRatingProfile.smallOpen, 10),
-        };
-        final yachtRatings = {
-          current: rating(MotorboatRatingProfile.yacht, 20),
-          afternoon: rating(MotorboatRatingProfile.yacht, 10),
-        };
-        final small = ActivityTimeWindowRecommendations.best(smallRatings);
-        final yacht = ActivityTimeWindowRecommendations.best(yachtRatings);
-
         double maximumScore(Map<ActivityTimeWindow, ActivityRating> ratings) =>
             ratings.values
                 .map((rating) => rating.score)
                 .whereType<double>()
                 .reduce((left, right) => left > right ? left : right);
 
-        expect(small?.rating.score, maximumScore(smallRatings));
-        expect(yacht?.rating.score, maximumScore(yachtRatings));
+        for (final profile in MotorboatRatingProfile.values) {
+          final ratings = {
+            current: rating(profile, 20),
+            afternoon: rating(profile, 10),
+          };
+          expect(
+            ActivityTimeWindowRecommendations.best(ratings)?.rating.score,
+            maximumScore(ratings),
+          );
+        }
       },
     );
   });
